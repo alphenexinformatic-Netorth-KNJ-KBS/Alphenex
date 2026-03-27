@@ -1,1 +1,22 @@
-node_modules
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Environment & Secrets (CRITICAL)
+.env
+.env.*
+public/api/raga_config.php
+
+# PHP & Server
+vendor/
+composer.lock
+.htaccess
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

@@ -75,7 +75,7 @@ function HomePage() {
     ],
     "contactPoint": {
       "@type": "ContactPoint",
-      "email": "info@alphenex.com",
+      "email": "alphenex.informatic@alphenex.com",
       "contactType": "customer service"
     }
   };

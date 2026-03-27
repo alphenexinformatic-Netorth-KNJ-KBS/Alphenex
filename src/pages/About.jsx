@@ -38,7 +38,7 @@ function AboutPage() {
       "foundingDate": "2020",
       "contactPoint": {
         "@type": "ContactPoint",
-        "email": "info@alphenex.com",
+        "email": "alphenex.informatic@alphenex.com",
         "contactType": "customer support"
       }
     }

@@ -100,8 +100,7 @@ function Footer() {
                   <Mail size={16} />
                 </div>
                 <div className="flex flex-col pt-1">
-                  <span className="font-sans text-sm text-gray-400 font-light">info@alphenex.com</span>
-                  <span className="font-sans text-sm text-gray-400 font-light break-all">alphenexinformatic@gmail.com</span>
+                  <span className="font-sans text-sm text-gray-400 font-light break-all">alphenex.informatic@alphenex.com</span>
                 </div>
               </div>
               <div className="flex items-start space-x-4 group">

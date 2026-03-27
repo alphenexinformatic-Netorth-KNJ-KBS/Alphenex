@@ -45,7 +45,7 @@ function Contact() {
     "@context": "https://schema.org",
     "@type": "LocalBusiness",
     "name": "Alphenex Informatic",
-    "email": "info@alphenex.com",
+    "email": "alphenex.informatic@alphenex.com",
     "openingHours": "Mo-Fr 09:00-18:00",
     "url": "https://alphenex.com/contact",
     "priceRange": "$$$"
@@ -145,8 +145,7 @@ function Contact() {
                         </div>
                         <div>
                           <p className="font-semibold mb-1 text-gray-400 uppercase text-sm tracking-wide">Email</p>
-                          <p className="text-white text-base font-medium">info@alphenex.com</p>
-                          <p className="text-white text-base font-medium break-all mt-1">alphenexinformatic@gmail.com</p>
+                          <p className="text-white text-base font-medium break-all">alphenex.informatic@alphenex.com</p>
                         </div>
                       </div>
 

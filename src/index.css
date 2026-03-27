@@ -2,8 +2,6 @@
   TEMPLATE STYLES: These styles are used as a base template.
   Styles should be edited to match the requirements of the project.
 */
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -16,8 +14,8 @@
     --background-cream: #F5F5F0;
     --text-dark: #1a1a1a;
     
-		--background: 0 0% 100%;
-		--foreground: 0 0% 10%; /* Darker for better contrast */
+		--background: 220 40% 6%; /* #020c1b converted to HSL approx */
+		--foreground: 0 0% 98%;
 		--card: 0 0% 100%;
 		--card-foreground: 0 0% 3.9%;
 		--popover: 0 0% 100%;
@@ -155,47 +153,36 @@
 }
 
 /* ============================================================
-   HERO CSS ANIMATIONS — Replaces framer-motion in Hero.jsx
-   Staggered fade-in-up for each element. Zero JS overhead.
+   HERO CSS ANIMATIONS
+   No delays, zero JS overhead.
    ============================================================ */
 @keyframes heroFadeUp {
   from {
-    opacity: 0;
-    transform: translateY(24px);
+    transform: translateY(10px);
+    opacity: 0.8;
   }
   to {
-    opacity: 1;
     transform: translateY(0);
+    opacity: 1;
   }
 }
 
 @keyframes heroFadeIn {
-  from { opacity: 0; }
+  from { opacity: 0.5; }
   to   { opacity: 1; }
 }
 
-/* Staggered delays for hero elements */
-.hero-animate-1 {
-  animation: heroFadeUp 0.6s ease-out both;
+/* Instantly visible for Speed Index optimization */
+.hero-animate-1,
+.hero-animate-2,
+.hero-animate-3,
+.hero-animate-4,
+.hero-animate-5 {
+  animation: heroFadeUp 0.3s ease-out both;
   animation-delay: 0ms;
 }
-.hero-animate-2 {
-  animation: heroFadeUp 0.8s ease-out both;
-  animation-delay: 100ms;
-}
-.hero-animate-3 {
-  animation: heroFadeUp 0.8s ease-out both;
-  animation-delay: 250ms;
-}
-.hero-animate-4 {
-  animation: heroFadeUp 0.8s ease-out both;
-  animation-delay: 400ms;
-}
-.hero-animate-5 {
-  animation: heroFadeUp 0.8s ease-out both;
-  animation-delay: 600ms;
-}
+
 .hero-animate-6 {
-  animation: heroFadeIn 0.8s ease-out both;
-  animation-delay: 1200ms;
+  animation: heroFadeIn 0.3s ease-out both;
+  animation-delay: 0ms;
 }

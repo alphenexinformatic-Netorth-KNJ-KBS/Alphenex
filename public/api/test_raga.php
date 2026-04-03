@@ -15,7 +15,7 @@ $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, 
 $results = [];
 
 // Show column names for each table
-$tables = ['Alphenex_chat_sessions', 'Alphenex_chat_messages', 'Alphenex_Chat_Leads'];
+$tables = ['Alphenex_chat_messages', 'Alphenex_Chat_Leads'];
 foreach ($tables as $table) {
     try {
         $stmt = $pdo->query("DESCRIBE $table");

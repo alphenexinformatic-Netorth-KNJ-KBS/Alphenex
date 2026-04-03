@@ -40,6 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 require_once __DIR__ . '/raga_config.php';
 require_once __DIR__ . '/raga_knowledge.php';
 require_once __DIR__ . '/log_error.php';
+require_once __DIR__ . '/raga_lead_staging.php'; // New lead staging system
 
 /**
  * Generate a cryptographically secure session token
@@ -69,74 +70,62 @@ function getDB(): PDO
 }
 
 /**
- * Find or create a chat session
+ * Find or generate a chat session context (identity is now just the token)
  */
 function resolveSession(PDO $pdo, ?string $token): array
 {
-    // If token provided, try to find existing session
+    // Identity is now purely token-based. No session table lookup needed.
     if ($token && strlen($token) === 64) {
-        $stmt = $pdo->prepare(
-            "SELECT id, session_token, created_at FROM Alphenex_chat_sessions 
-             WHERE session_token = :token 
-             AND created_at >= DATE_SUB(NOW(), INTERVAL :ttl HOUR)
-             LIMIT 1"
-        );
-        $stmt->execute([':token' => $token, ':ttl' => RAGA_SESSION_TTL_HOURS]);
-        $session = $stmt->fetch();
-
-        if ($session) {
-            // Update last activity
-            $update = $pdo->prepare(
-                "UPDATE Alphenex_chat_sessions SET updated_at = NOW() WHERE id = :id"
-            );
-            $update->execute([':id' => $session['id']]);
-            return $session;
-        }
+        $activeToken = $token;
+    } else {
+        $activeToken = generateSessionToken();
     }
 
-    // Create new session
-    $newToken = generateSessionToken();
-    $stmt = $pdo->prepare(
-        "INSERT INTO Alphenex_chat_sessions (session_token, created_at, updated_at) 
-         VALUES (:token, NOW(), NOW())"
-    );
-    $stmt->execute([':token' => $newToken]);
+    // Attempt to resolve user's name and session_id from Leads table
+    $stmt = $pdo->prepare("SELECT session_id, name FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+    $stmt->execute([':token' => $activeToken]);
+    $lead = $stmt->fetch();
+
+    // If no numeric ID found, generate a deterministic one
+    $sessionId = ($lead && !empty($lead['session_id'])) ? (int)$lead['session_id'] : (abs(crc32($activeToken)) % 100000000);
 
     return [
-        'id' => $pdo->lastInsertId(),
-        'session_token' => $newToken,
-        'created_at' => date('Y-m-d H:i:s')
+        'id' => $sessionId,
+        'session_token' => $activeToken,
+        'user_name' => $lead['name'] ?? null
     ];
 }
 
 /**
- * Save a message to chat history
+ * Save a message to chat history — keyed by session_id and session_token
  */
-function saveMessage(PDO $pdo, int $sessionId, string $role, string $content): void
+function saveMessage(PDO $pdo, int $sessionId, string $sessionToken, string $role, string $content): void
 {
+    // Keeping both columns as requested
     $stmt = $pdo->prepare(
-        "INSERT INTO Alphenex_chat_messages (session_id, role, message, created_at) 
-         VALUES (:session_id, :role, :message, NOW())"
+        "INSERT INTO Alphenex_chat_messages (session_id, session_token, role, message, created_at) 
+         VALUES (:session_id, :token, :role, :message, NOW())"
     );
     $stmt->execute([
         ':session_id' => $sessionId,
+        ':token' => $sessionToken,
         ':role' => $role,
         ':message' => $content
     ]);
 }
 
 /**
- * Load recent chat history for context
+ * Load recent chat history for context — keyed by session_token
  */
-function loadChatHistory(PDO $pdo, int $sessionId): array
+function loadChatHistory(PDO $pdo, string $sessionToken): array
 {
     $stmt = $pdo->prepare(
         "SELECT role, message FROM Alphenex_chat_messages 
-         WHERE session_id = :session_id 
+         WHERE session_token = :token 
          ORDER BY created_at ASC 
          LIMIT :limit"
     );
-    $stmt->bindValue(':session_id', $sessionId, PDO::PARAM_INT);
+    $stmt->bindValue(':token', $sessionToken, PDO::PARAM_STR);
     $stmt->bindValue(':limit', RAGA_MAX_HISTORY_MESSAGES, PDO::PARAM_INT);
     $stmt->execute();
     return $stmt->fetchAll();
@@ -343,19 +332,43 @@ try {
     // Connect to database
     $pdo = getDB();
 
-    // Resolve or create session
+    // Resolve or create session context
     $session = resolveSession($pdo, $sessionToken ?: null);
-    $sessionId = (int)$session['id'];
+    $sessionId = $session['id'];
     $activeToken = $session['session_token'];
+    $userName = $session['user_name'];
+
+    // Check if this is the start of a returning session
+    $msgCheck = $pdo->prepare("SELECT COUNT(*) FROM Alphenex_chat_messages WHERE session_token = :token");
+    $msgCheck->execute([':token' => $activeToken]);
+    $msgCount = (int)$msgCheck->fetchColumn();
+    
+    $isReturning = ($msgCount === 0 && !empty($userName));
+
+    // --- NEW: SPECIAL GREETING HANDLER ---
+    if (isset($data['is_greeting']) && $data['is_greeting'] === true) {
+        $systemPrompt = getRagaSystemPrompt($userName, $isReturning);
+        // Virtual trigger to get the first greeting from AI
+        $greetingReply = callAI($systemPrompt, [], "START_CONVERSATION");
+        
+        echo json_encode([
+            "success" => true,
+            "session_token" => $activeToken,
+            "session_id" => $sessionId,
+            "reply" => html_entity_decode($greetingReply, ENT_QUOTES | ENT_HTML5, 'UTF-8'),
+            "is_returning" => $isReturning
+        ]);
+        exit;
+    }
 
     // Save user message to database
-    saveMessage($pdo, $sessionId, 'user', $userMessage);
+    saveMessage($pdo, $sessionId, $activeToken, 'user', $userMessage);
 
-    // Load recent history for context
-    $history = loadChatHistory($pdo, $sessionId);
+    // Load recent history AFTER saving the current message
+    $history = loadChatHistory($pdo, $activeToken);
 
-    // Get system knowledge prompt
-    $systemPrompt = getRagaSystemPrompt();
+    // Get system knowledge prompt with returning user context
+    $systemPrompt = getRagaSystemPrompt($userName, $isReturning);
 
     // Call LLM securely (API key stays server-side)
     $aiReply = callAI($systemPrompt, $history, $userMessage);
@@ -364,7 +377,59 @@ try {
     $aiReply = html_entity_decode($aiReply, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
     // Save assistant reply to database
-    saveMessage($pdo, $sessionId, 'assistant', $aiReply);
+    saveMessage($pdo, $sessionId, $activeToken, 'assistant', $aiReply);
+
+
+    // --- NEW: LEAD STAGING & AUTO-SAVE INTEGRATION ---
+    // Extract potential lead info from user message (Regex sniffing)
+    $extracted = [];
+    
+    // Sniff for Email
+    if (preg_match('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $userMessage, $match)) {
+        $extracted['email'] = $match[0];
+    }
+    
+    // Sniff for Phone (Look for sequences of 7+ digits)
+    if (preg_match('/(?:\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}|\d{7,13}/', $userMessage, $match)) {
+        $extracted['phone'] = $match[0];
+    }
+    
+    // Sniff for Name (Heuristic: "My name is John", "I am John", "Call me John")
+    if (preg_match('/(?:my name is|i am|call me|i\'m|this is) ([a-zA-Z\s]{2,30})/i', $userMessage, $match)) {
+        $extracted['name'] = trim($match[1]);
+    }
+    
+    // Sniff for Inquiry (If message is long or contains "need", "want", "looking for")
+    if (mb_strlen($userMessage) > 15 && preg_match('/(?:need|want|looking for|help with|project|develop|build|service|seo|design|marketing) (.*)/i', $userMessage, $match)) {
+        $extracted['inquiry'] = trim($match[0]);
+    }
+
+    // Process the staged lead (Update JSON + Auto-save to DB if complete)
+    if (!empty($extracted)) {
+        processStagedLead($activeToken, $extracted);
+    }
+
+    // --- NEW: AI-ASSISTED DATA EXTRACTION ---
+    // If AI appended a [DATA]{...}[/DATA] block, extract and use it
+    if (preg_match('/\[DATA\](.*?)\[\/DATA\]/s', $aiReply, $match)) {
+        $aiJson = $match[1];
+        $aiExtracted = json_decode($aiJson, true);
+        
+        // Strip the data block from the user-facing reply
+        $aiReply = trim(preg_replace('/\[DATA\].*?\[\/DATA\]/s', '', $aiReply));
+        
+        if ($aiExtracted && is_array($aiExtracted)) {
+            // Filter out nulls/dummy values
+            $cleanAiData = array_filter($aiExtracted, function($v) { 
+                return $v !== null && $v !== '' && strtolower($v) !== 'null'; 
+            });
+            
+            if (!empty($cleanAiData)) {
+                processStagedLead($activeToken, $cleanAiData);
+            }
+        }
+    }
+    // ------------------------------------------
 
     // Return response — NEVER include API key, token, or internal details
     echo json_encode([

@@ -32,32 +32,97 @@ try {
         throw new Exception("No valid data received.");
     }
 
-    // Extract fields (matching the frontend mapping in ContactForm.jsx)
-    $name    = trim($data['name'] ?? '');
-    $email   = trim($data['email'] ?? '');
-    $phone   = trim($data['phone'] ?? ''); // Combined country code + phone
-    $company = trim($data['company'] ?? '');
-    $service = trim($data['service'] ?? '');
-    $message = trim($data['message'] ?? ''); // Optional field
-
-    // Validation (as a safety measure on top of the frontend)
-    if (empty($name) || empty($email) || empty($phone)) {
-        throw new Exception("Required fields are missing (Name, Email, or Phone).");
+    // Extract session token
+    $sessionToken = trim($data['session_token'] ?? '');
+    if (strlen($sessionToken) !== 64) {
+        $sessionToken = bin2hex(random_bytes(32)); // Emergency token
     }
 
-    // SQL insertion logic: uses backticks for columns with spaces
-    $sql = "INSERT INTO Alphenex_Inquiry_Table (Name, Email, PhoneNumber, Company, `Service Interest`, Message) 
-            VALUES (:name, :email, :phone, :company, :service, :message)";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':name'    => $name,
-        ':email'   => $email,
-        ':phone'   => $phone,
-        ':company' => $company,
-        ':service' => $service,
-        ':message' => $message
-    ]);
+    // --- IDENTITY RESOLUTION (No session table needed) ---
+    // Try to find an existing parent lead for this session token to get the common session_id
+    $findSid = $pdo->prepare("SELECT session_id FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+    $findSid->execute([':token' => $sessionToken]);
+    $existingSid = $findSid->fetchColumn();
+
+    // If no numeric ID found in leads table, generate a deterministic numeric ID from the token
+    // This maintains the 'session_id' column for systems that expect an integer
+    $sessionId = $existingSid ? (int)$existingSid : (abs(crc32($sessionToken)) % 100000000);
+
+    // 1. Feature: Check for existing lead (for Popup)
+    // We now fetch directly from the Leads table based on token
+    if (isset($data['action']) && $data['action'] === 'check_existing') {
+        $check = $pdo->prepare("SELECT name FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+        $check->execute([':token' => $sessionToken]);
+        $existing = $check->fetch();
+        echo json_encode(["status" => "success", "exists" => !!$existing, "name" => $existing['name'] ?? '']);
+        exit;
+    }
+
+    // --- Lead Submission Mapping ---
+    // Map fields and set source
+    $name              = trim($data['name'] ?? '');
+    $email             = trim($data['email'] ?? '');
+    $phone             = trim($data['phone'] ?? ''); 
+    $company           = trim($data['company'] ?? '');
+    $service           = trim($data['service'] ?? '');
+    $message           = trim($data['message'] ?? ''); 
+    $childSessionId    = trim($data['child_session_id'] ?? '');
+
+    // Validation
+    if (empty($name) || (empty($email) && empty($phone))) {
+        throw new Exception("Required contact information is missing.");
+    }
+
+    // --- DEDUPLICATION / CHILD SESSION LOGIC ---
+    if (!empty($childSessionId)) {
+        // This is a NEW requirement in the same session -> ALWAYS INSERT
+        $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, child_session_id, name, email, phone, inquiry, source, Company_name, Service_Interest) 
+                VALUES (:sid, :stoken, :csid, :name, :email, :phone, :inquiry, :source, :company, :service)";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':sid'     => $sessionId,
+            ':stoken'  => $sessionToken,
+            ':csid'    => $childSessionId,
+            ':name'    => $name,
+            ':email'   => $email,
+            ':phone'   => $phone,
+            ':inquiry' => $message,
+            ':source'  => 'Inquiry Form',
+            ':company' => $company,
+            ':service' => $service
+        ]);
+    } else {
+        // Standard submission: check if a 'parent' lead exists for this token (no child ID)
+        $check = $pdo->prepare("SELECT id FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+        $check->execute([':token' => $sessionToken]);
+        $existingLeadId = $check->fetchColumn();
+
+        if ($existingLeadId) {
+            // Business Rule: Standard inquiries are "Full and Final". No overwriting allowed.
+            // User must continue with a New Inquiry (Child Session) which is handled by the 'childSessionId' block above.
+            echo json_encode([
+                "status" => "error", 
+                "message" => "You have already submitted an inquiry for this session. Please use the 'New Inquiry' option to submit additional requirements."
+            ]);
+            exit;
+        } else {
+            // INSERT new parent lead
+            $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, name, email, phone, inquiry, source, Company_name, Service_Interest) 
+                    VALUES (:sid, :stoken, :name, :email, :phone, :inquiry, :source, :company, :service)";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':sid'     => $sessionId,
+                ':stoken'  => $sessionToken,
+                ':name'    => $name,
+                ':email'   => $email,
+                ':phone'   => $phone,
+                ':inquiry' => $message,
+                ':source'  => 'Inquiry Form',
+                ':company' => $company,
+                ':service' => $service
+            ]);
+        }
+    }
 
     // Send success response
     echo json_encode(["status" => "success", "message" => "Your message has been saved. We'll contact you soon!"]);

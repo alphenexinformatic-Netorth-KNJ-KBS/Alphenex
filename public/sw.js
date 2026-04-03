@@ -44,10 +44,16 @@ self.addEventListener('fetch', (event) => {
         
         // If it's a navigation request and not in cache, return the offline index.html
         if (event.request.mode === 'navigate') {
-          return caches.match(OFFLINE_URL);
+          return caches.match(OFFLINE_URL).then(offlineHtml => {
+            return offlineHtml || new Response('<html><body><h2>Offline Mode</h2><p>Please check your internet connection.</p></body></html>', {
+              headers: { 'Content-Type': 'text/html' },
+              status: 503
+            });
+          });
         }
         
-        return Promise.reject('no-match');
+        // Graceful fallback for missing assets to prevent Uncaught Promise rejections
+        return new Response('', { status: 503, statusText: 'Offline' });
       });
     })
   );

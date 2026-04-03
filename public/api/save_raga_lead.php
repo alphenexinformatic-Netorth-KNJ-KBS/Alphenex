@@ -64,16 +64,17 @@ try {
         $errors[] = "Name is too long (max 100 characters)";
     }
     
-    if (empty($email)) {
-        $errors[] = "Email is required";
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = "Please enter a valid email address";
-    }
-    
-    if (empty($phone)) {
-        $errors[] = "Phone number is required";
-    } elseif (!preg_match('/^[\d\s\-\+\(\)]{7,20}$/', $phone)) {
-        $errors[] = "Please enter a valid phone number";
+    // Check if both email and phone are empty
+    if (empty($email) && empty($phone)) {
+        $errors[] = "At least one contact method (Email or Phone) is required";
+    } else {
+        // If provided, check if valid
+        if (!empty($email) && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = "Please enter a valid email address";
+        }
+        if (!empty($phone) && !preg_match('/^[\d\s\-\+\(\)]{7,20}$/', $phone)) {
+            $errors[] = "Please enter a valid phone number";
+        }
     }
     
     if (empty($inquiry)) {
@@ -105,44 +106,82 @@ try {
         ]
     );
     
-    // Resolve session ID if session_token provided
-    $sessionId = null;
-    if (!empty($sessionToken) && strlen($sessionToken) === 64) {
-        $stmt = $pdo->prepare(
-            "SELECT id FROM Alphenex_chat_sessions WHERE session_token = :token LIMIT 1"
-        );
-        $stmt->execute([':token' => $sessionToken]);
-        $session = $stmt->fetch();
-        if ($session) {
-            $sessionId = (int) $session['id'];
-        }
+    // Extract session token
+    $sessionToken = trim($data['session_token'] ?? '');
+    if (strlen($sessionToken) !== 64) {
+         // Generate if missing, though typically the client provides it
+         $sessionToken = bin2hex(random_bytes(32)); 
     }
+
+    // --- IDENTITY RESOLUTION (No session table needed) ---
+    // Try to find an existing parent lead for this session token to get the common session_id
+    $findSid = $pdo->prepare("SELECT session_id FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+    $findSid->execute([':token' => $sessionToken]);
+    $existingSid = $findSid->fetchColumn();
+
+    // If no numeric ID found in leads table, generate a deterministic numeric ID from the token
+    $sessionId = $existingSid ? (int)$existingSid : (abs(crc32($sessionToken)) % 100000000);
+
+    $childSessionId = trim($data['child_session_id'] ?? '');
     
-    // Insert lead into Alphenex_Chat_Leads (NOT Alphenex_Inquiry_Table)
-    $stmt = $pdo->prepare(
-        "INSERT INTO Alphenex_Chat_Leads (session_id, name, email, phone, inquiry, created_at) 
-         VALUES (:session_id, :name, :email, :phone, :inquiry, NOW())"
-    );
-    $stmt->execute([
-        ':session_id' => $sessionId,
-        ':name'       => $name,
-        ':email'      => $email,
-        ':phone'      => $phone,
-        ':inquiry'    => $inquiry,
-    ]);
-    
-    // Update session with lead completion flag if session exists
-    if ($sessionId) {
-        $update = $pdo->prepare(
-            "UPDATE Alphenex_chat_sessions 
-             SET lead_completed = 1, user_name = :name, email = :email, updated_at = NOW() 
-             WHERE id = :id"
-        );
-        $update->execute([
-            ':name'  => $name,
-            ':email' => $email,
-            ':id'    => $sessionId,
+    // 1. Feature: Check for existing lead (for Popup)
+    if (isset($data['action']) && $data['action'] === 'check_existing') {
+        $check = $pdo->prepare("SELECT name FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+        $check->execute([':token' => $sessionToken]);
+        $existing = $check->fetch();
+        echo json_encode(["success" => true, "exists" => !!$existing, "name" => $existing['name'] ?? '']);
+        exit;
+    }
+
+    // --- DEDUPLICATION / CHILD SESSION LOGIC ---
+    if (!empty($childSessionId)) {
+        // This is a NEW requirement (Child) -> ALWAYS INSERT
+        $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, child_session_id, name, email, phone, inquiry, source, Company_name, Service_Interest) 
+                VALUES (:sid, :stoken, :csid, :name, :email, :phone, :inquiry, :source, :company, :service)";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':sid'      => $sessionId,
+            ':stoken'   => $sessionToken,
+            ':csid'     => $childSessionId,
+            ':name'     => $name,
+            ':email'    => $email,
+            ':phone'    => $phone,
+            ':inquiry'  => $inquiry,
+            ':source'   => 'raga_chatbot',
+            ':company'  => trim($data['company'] ?? ''),
+            ':service'  => trim($data['service'] ?? '')
         ]);
+    } else {
+        // Standard Chat Submission: Check if a 'parent' lead exists without a child ID
+        $check = $pdo->prepare("SELECT id FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+        $check->execute([':token' => $sessionToken]);
+        $existingLeadId = $check->fetchColumn();
+
+        if ($existingLeadId) {
+            // Business Rule: Inquiries are "Full and Final". No modifications allowed once saved.
+            // Any new data must be submitted under a 'child_session_id'.
+            echo json_encode([
+                "success" => false, 
+                "error" => "An inquiry has already been finalized for this session. To provide new details, please start a New Inquiry."
+            ]);
+            exit;
+        } else {
+            // INSERT new parent lead
+            $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, name, email, phone, inquiry, source, Company_name, Service_Interest) 
+                    VALUES (:sid, :stoken, :name, :email, :phone, :inquiry, :source, :company, :service)";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':sid'     => $sessionId,
+                ':stoken'  => $sessionToken,
+                ':name'    => $name,
+                ':email'   => $email,
+                ':phone'   => $phone,
+                ':inquiry' => $inquiry,
+                ':source'  => 'raga_chatbot',
+                ':company' => trim($data['company'] ?? ''),
+                ':service' => trim($data['service'] ?? '')
+            ]);
+        }
     }
     
     echo json_encode([

@@ -145,6 +145,22 @@
     box-shadow: 0 0 15px rgba(9, 196, 240, 0.4);
   }
 
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(77, 200, 240, 0.2);
+    border-radius: 10px;
+    transition: all 0.3s ease;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(77, 200, 240, 0.6);
+    box-shadow: 0 0 15px rgba(77, 200, 240, 0.3);
+  }
+
   /* Firefox */
   * {
     scrollbar-width: thin;

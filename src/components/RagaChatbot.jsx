@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, MessageCircle, User, Mail, Phone, FileText, Check, AlertCircle, Sparkles, ArrowLeft, ChevronDown, Search } from 'lucide-react';
+import { Send, X, MessageCircle, User, Mail, Phone, FileText, Check, AlertCircle, Sparkles, ArrowLeft, ChevronDown, Search, Loader2, ShieldCheck, RefreshCw } from 'lucide-react';
 import { allCountries } from '../data/Countries';
 import { useSession } from '../context/SessionContext';
+import { useToast } from '@/components/ui/use-toast';
 
 // ============================================================
 // RAGA CHATBOT — REACT WIDGET
@@ -20,6 +21,8 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL
 
 const RAGA_CHAT_URL = `${API_BASE}/api/raga.php`;
 const RAGA_LEAD_URL = `${API_BASE}/api/save_raga_lead.php`;
+const OTP_SEND_URL = `${API_BASE}/api/send_otp.php`;
+const OTP_VERIFY_URL = `${API_BASE}/api/verify_otp.php`;
 const SESSION_KEY = 'raga_session_token';
 
 // ─── Typing Indicator ────────────────────────────────────────
@@ -46,7 +49,9 @@ const TypingIndicator = () => (
 
 // ─── Chat Message Bubble ─────────────────────────────────────
 const ChatBubble = ({ msgObj, onAction, onOptionClick }) => {
-  const { text, isUser, isError, options } = msgObj;
+  const { text, isUser, isError, options, showInquiryButton } = msgObj;
+  // Clean any leftover [ACTION:SHOW_FORM] tags from text display
+  const cleanText = (text || '').replace(/\[ACTION:SHOW_FORM\]/gi, '').trim();
 
   return (
     <motion.div
@@ -76,7 +81,35 @@ const ChatBubble = ({ msgObj, onAction, onOptionClick }) => {
           ? '0 4px 15px rgba(9,146,194,0.3)'
           : '0 2px 8px rgba(0,0,0,0.2)',
       }}>
-        {text}
+        {cleanText}
+
+        {/* Inline "Start Inquiry" button when AI triggers form */}
+        {showInquiryButton && !isUser && (
+          <button
+            onClick={onAction}
+            style={{
+              marginTop: '12px',
+              width: '100%',
+              padding: '10px 14px',
+              background: 'linear-gradient(135deg, #0992C2, #4dc8f0)',
+              border: 'none',
+              borderRadius: '10px',
+              color: 'white',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              boxShadow: '0 4px 16px rgba(9,146,194,0.4)',
+              transition: 'all 0.2s',
+            }}
+          >
+            <FileText size={14} />
+            Start Inquiry
+          </button>
+        )}
 
         {/* Clickable Quick Reply Options */}
         {options && options.length > 0 && (
@@ -143,7 +176,8 @@ const ChatBubble = ({ msgObj, onAction, onOptionClick }) => {
 };
 
 // ─── Lead Form Inside Widget ─────────────────────────────────
-const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
+const LeadForm = ({ onSubmit, onBack, isSubmitting, sessionToken }) => {
+  const { toast } = useToast();
   const [form, setForm] = useState({ name: '', email: '', phone: '', inquiry: '' });
   const [errors, setErrors] = useState({});
   const [selectedCountry, setSelectedCountry] = useState(allCountries.find(c => c.name === 'India') || allCountries[0]);
@@ -151,6 +185,15 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
   const [searchCountry, setSearchCountry] = useState('');
   const [activeCountryIndex, setActiveCountryIndex] = useState(-1);
   const countryRef = useRef(null);
+
+  // OTP State
+  const [otpStep, setOtpStep] = useState('idle'); // idle | sending | sent | verifying | verified
+  const [otpCode, setOtpCode] = useState('');
+  const [otpId, setOtpId] = useState(null);
+  const [otpError, setOtpError] = useState('');
+  const [otpCountdown, setOtpCountdown] = useState(0);
+  const [canResend, setCanResend] = useState(false);
+  const otpInputRefs = useRef([]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -161,6 +204,16 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // OTP countdown timer
+  useEffect(() => {
+    if (otpCountdown > 0) {
+      const timer = setTimeout(() => setOtpCountdown(otpCountdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (otpCountdown === 0 && otpStep === 'sent') {
+      setCanResend(true);
+    }
+  }, [otpCountdown, otpStep]);
 
   const handleCountryKeyDown = (e) => {
     if (e.key === 'ArrowDown') {
@@ -186,7 +239,6 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
     if (!form.name.trim()) e.name = 'Name is required';
     else if (!/^[a-zA-Z\s]+$/.test(form.name)) e.name = 'Only letters allowed';
 
-    // Either Email OR Phone must be provided
     const hasEmail = form.email.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
     const hasPhone = form.phone.trim() && /^\d{7,13}$/.test(form.phone.replace(/\D/g, ''));
 
@@ -198,9 +250,8 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
       if (form.phone.trim()) {
         const purePhone = form.phone.replace(/\D/g, '');
         const expectedLength = selectedCountry.phoneLength || 10;
-        // Strictly validate length matching country rules
         if (purePhone.length !== expectedLength) {
-          e.phone = `For ${selectedCountry.name}, phone number must be exactly ${expectedLength} digits.`;
+          e.phone = `For ${selectedCountry.name}, phone must be ${expectedLength} digits.`;
         }
       }
     }
@@ -210,12 +261,103 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
     return Object.keys(e).length === 0;
   };
 
+  // ── Send OTP ──
+  const handleSendOtp = async () => {
+    if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+      setErrors(p => ({ ...p, email: 'Valid email required to send OTP' }));
+      return;
+    }
+    setOtpStep('sending');
+    setOtpError('');
+    try {
+      const resp = await fetch(OTP_SEND_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.email, session_token: sessionToken, source: 'raga_chatbot' }),
+      });
+      const result = await resp.json();
+      if (result.success) {
+        setOtpStep('sent');
+        setOtpId(result.otp_id);
+        setOtpCountdown(60);
+        setCanResend(false);
+        setOtpCode('');
+      } else {
+        setOtpStep('idle');
+        setOtpError(result.error || 'Failed to send OTP.');
+      }
+    } catch (err) {
+      setOtpStep('idle');
+      setOtpError('Network error. Please try again.');
+    }
+  };
+
+  // ── Verify OTP ──
+  const handleVerifyOtp = async (codeOverride) => {
+    const code = codeOverride || otpCode;
+    if (code.length !== 6) { setOtpError('Enter the complete 6-digit code.'); return; }
+    setOtpStep('verifying');
+    setOtpError('');
+    try {
+      const resp = await fetch(OTP_VERIFY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.email, otp_code: code, session_token: sessionToken }),
+      });
+      const result = await resp.json();
+      if (result.success) {
+        setOtpStep('verified');
+        setOtpId(result.otp_id);
+        setOtpError('');
+        toast({ title: 'Success', description: 'Email verification is done successfully' });
+      } else {
+        setOtpStep('sent');
+        setOtpError(result.error || 'Invalid code.');
+        toast({ title: 'Failed', description: 'OTP is wrong.Email verification is failed.', variant: 'destructive' });
+        if (result.expired || result.max_attempts) { setOtpStep('idle'); setOtpCode(''); }
+      }
+    } catch (err) {
+      setOtpStep('sent');
+      setOtpError('Network error. Please try again.');
+    }
+  };
+
+  const handleOtpDigitChange = (index, value) => {
+    if (!/^\d*$/.test(value)) return;
+    // Pad the array to always have 6 slots
+    const newCode = Array.from({ length: 6 }, (_, i) => otpCode[i] || '');
+    newCode[index] = value.slice(-1);
+    const joined = newCode.join('');
+    setOtpCode(joined);
+    setOtpError('');
+    if (value && index < 5) otpInputRefs.current[index + 1]?.focus();
+    if (joined.replace(/\s/g, '').length === 6) handleVerifyOtp(joined);
+  };
+
+  const handleOtpKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !otpCode[index] && index > 0) otpInputRefs.current[index - 1]?.focus();
+  };
+
+  const handleOtpPaste = (e) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (pastedData.length > 0) {
+      setOtpCode(pastedData);
+      otpInputRefs.current[Math.min(pastedData.length - 1, 5)]?.focus();
+      if (pastedData.length === 6) handleVerifyOtp(pastedData);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (otpStep !== 'verified') {
+      setOtpError('Please verify your email before submitting.');
+      return;
+    }
     if (validate()) {
-      // Format as +Code-PhoneNumber as requested
-      const finalPhone = `${selectedCountry.code}-${form.phone.replace(/\D/g, '')}`;
-      onSubmit({ ...form, phone: finalPhone });
+      const purePhone = form.phone.replace(/\D/g, '');
+      const finalPhone = purePhone.length > 0 ? `${selectedCountry.code}-${purePhone}` : "";
+      onSubmit({ ...form, phone: finalPhone, otp_id: otpId });
     }
   };
 
@@ -231,6 +373,16 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
     if (errors.name) setErrors(p => ({ ...p, name: '' }));
   };
 
+  const handleEmailChange = (val) => {
+    setForm(p => ({ ...p, email: val }));
+    if (errors.email) setErrors(p => ({ ...p, email: '' }));
+    // Reset OTP if email changes
+    if (otpStep === 'verified' || otpStep === 'sent') {
+      setOtpStep('idle'); setOtpCode(''); setOtpId(null); setOtpError('');
+      setOtpCountdown(0); setCanResend(false);
+    }
+  };
+
   const inputStyle = (hasError) => ({
     width: '100%', padding: '10px 12px 10px 36px',
     background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.05)',
@@ -243,6 +395,8 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
     position: 'absolute', left: '10px', top: '50%',
     transform: 'translateY(-50%)', color: '#4dc8f0', opacity: 0.7,
   };
+
+  const formatCountdown = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
   return (
     <motion.form
@@ -267,205 +421,349 @@ const LeadForm = ({ onSubmit, onBack, isSubmitting }) => {
         </p>
 
         {/* Name */}
-        <div style={{ position: 'relative' }}>
-          <User size={14} style={iconStyle} />
-          <input
-            placeholder="Full Name"
-            value={form.name}
-            onChange={e => handleNameChange(e.target.value)}
-            style={inputStyle(errors.name)}
-            onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
-            onBlur={e => { e.target.style.borderColor = errors.name ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
-          />
-          {errors.name && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '2px', display: 'block' }}>{errors.name}</span>}
-        </div>
+        {!(otpStep === 'sent' || otpStep === 'verifying') && (
+          <div style={{ position: 'relative' }}>
+            <User size={14} style={iconStyle} />
+            <input
+              placeholder="Full Name"
+              value={form.name}
+              onChange={e => handleNameChange(e.target.value)}
+              style={inputStyle(errors.name)}
+              onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
+              onBlur={e => { e.target.style.borderColor = errors.name ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
+            />
+            {errors.name && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '2px', display: 'block' }}>{errors.name}</span>}
+          </div>
+        )}
 
-        {/* Email */}
+        {/* Email with OTP Button */}
         <div style={{ position: 'relative' }}>
           <Mail size={14} style={iconStyle} />
-          <input
-            type="email"
-            placeholder="Email Address"
-            value={form.email}
-            onChange={e => { setForm(p => ({ ...p, email: e.target.value })); if (errors.email) setErrors(p => ({ ...p, email: '' })); }}
-            style={inputStyle(errors.email)}
-            onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
-            onBlur={e => { e.target.style.borderColor = errors.email ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0' }}>
+            <input
+              type="email"
+              placeholder="Email Address"
+              value={form.email}
+              onChange={e => handleEmailChange(e.target.value)}
+              disabled={otpStep === 'verified'}
+              style={{
+                ...inputStyle(errors.email),
+                borderTopRightRadius: '0', borderBottomRightRadius: '0',
+                borderRight: 'none', flex: 1,
+                opacity: otpStep === 'verified' ? 0.6 : 1,
+              }}
+              onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
+              onBlur={e => { e.target.style.borderColor = errors.email ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
+            />
+            {otpStep === 'verified' ? (
+              <div style={{
+                padding: '10px 10px', background: 'rgba(16,185,129,0.1)',
+                border: '1px solid rgba(16,185,129,0.3)', borderTopRightRadius: '12px',
+                borderBottomRightRadius: '12px', display: 'flex', alignItems: 'center',
+                gap: '4px', color: '#34d399', fontSize: '11px', fontWeight: 700,
+                whiteSpace: 'nowrap', height: '40px'
+              }}>
+                <ShieldCheck size={14} /> Verified
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSendOtp}
+                disabled={otpStep === 'sending' || !form.email.trim()}
+                style={{
+                  padding: '10px 12px', background: 'rgba(77,200,240,0.12)',
+                  border: '1px solid rgba(77,200,240,0.3)', borderTopRightRadius: '12px',
+                  borderBottomRightRadius: '12px', color: '#4dc8f0', fontSize: '11px',
+                  fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
+                  display: 'flex', alignItems: 'center', gap: '4px', height: '40px',
+                  transition: 'all 0.2s',
+                  opacity: (otpStep === 'sending' || !form.email.trim()) ? 0.4 : 1,
+                }}
+              >
+                {otpStep === 'sending' ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Mail size={12} />}
+                {otpStep === 'sending' ? 'Sending' : otpStep === 'sent' ? 'Resend' : 'Verify'}
+              </button>
+            )}
+          </div>
           {errors.email && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '2px', display: 'block' }}>{errors.email}</span>}
         </div>
 
-        {/* Phone */}
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-          <fieldset style={{
-            position: 'relative',
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            background: errors.phone ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.05)',
-            border: `1px solid ${errors.phone ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'}`,
-            borderRadius: '12px',
-            padding: '0',
-            transition: 'border-color 0.2s',
-            overflow: 'visible'
-          }}>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '100%' }} ref={countryRef}>
-              <button
-                type="button"
-                onClick={() => setIsCountryOpen(!isCountryOpen)}
-                onKeyDown={handleCountryKeyDown}
-                style={{
-                  background: 'rgba(255,255,255,0.03)',
-                  border: 'none',
-                  borderRight: '1px solid rgba(255,255,255,0.1)',
-                  padding: '10px 8px 10px 12px',
-                  color: 'white',
-                  fontSize: '13px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  height: '40px'
-                }}
-              >
-                <span style={{ fontSize: '16px' }}>{selectedCountry.flag}</span>
-                <span style={{ fontWeight: 600 }}>{selectedCountry.code}</span>
-                <ChevronDown size={12} style={{ opacity: 0.5, transform: isCountryOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} />
-              </button>
-
-              <AnimatePresence>
-                {isCountryOpen && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+        {/* OTP Input Section */}
+        <AnimatePresence>
+          {(otpStep === 'sent' || otpStep === 'verifying') && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ overflow: 'hidden' }}
+            >
+              <div style={{
+                background: 'rgba(77,200,240,0.05)', border: '1px solid rgba(77,200,240,0.15)',
+                borderRadius: '12px', padding: '14px', marginBottom: '4px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                  <ShieldCheck size={14} style={{ color: '#4dc8f0' }} />
+                  <span style={{ color: 'white', fontSize: '12px', fontWeight: 600 }}>Enter 6-digit code</span>
+                </div>
+                {/* 6 digit boxes */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginBottom: '10px' }}>
+                  {[0,1,2,3,4,5].map(i => (
+                    <input
+                      key={i}
+                      ref={el => (otpInputRefs.current[i] = el)}
+                      type="text" inputMode="numeric" maxLength={1}
+                      value={otpCode[i] || ''}
+                      onChange={e => handleOtpDigitChange(i, e.target.value)}
+                      onKeyDown={e => handleOtpKeyDown(i, e)}
+                      onPaste={i === 0 ? handleOtpPaste : undefined}
+                      disabled={otpStep === 'verifying'}
+                      style={{
+                        width: '36px', height: '40px', textAlign: 'center', fontSize: '16px',
+                        fontWeight: 700, borderRadius: '8px', outline: 'none',
+                        background: '#0a1929',
+                        border: `2px solid ${otpError ? 'rgba(239,68,68,0.5)' : otpCode[i] ? 'rgba(77,200,240,0.5)' : 'rgba(255,255,255,0.1)'}`,
+                        color: otpError ? '#f87171' : '#4dc8f0',
+                        transition: 'all 0.2s',
+                        opacity: otpStep === 'verifying' ? 0.5 : 1,
+                      }}
+                    />
+                  ))}
+                </div>
+                {otpError && <p style={{ color: '#f87171', fontSize: '10px', textAlign: 'center', margin: '0 0 8px' }}>{otpError}</p>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)' }}>
+                    {otpCountdown > 0 ? (
+                      <span>Resend in <span style={{ color: '#4dc8f0', fontWeight: 600 }}>{formatCountdown(otpCountdown)}</span></span>
+                    ) : canResend ? (
+                      <button type="button" onClick={handleSendOtp} style={{
+                        background: 'none', border: 'none', color: '#4dc8f0', fontSize: '10px',
+                        fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', padding: 0
+                      }}>
+                        <RefreshCw size={10} /> Resend
+                      </button>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button" onClick={() => handleVerifyOtp()}
+                    disabled={otpCode.length !== 6 || otpStep === 'verifying'}
                     style={{
-                      position: 'absolute',
-                      top: '45px',
-                      left: '0',
-                      width: '240px',
-                      maxHeight: '200px',
-                      background: '#0d2137',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      borderRadius: '12px',
-                      boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
-                      zIndex: 100,
-                      overflow: 'hidden',
-                      display: 'flex',
-                      flexDirection: 'column'
+                      padding: '6px 14px', background: 'linear-gradient(135deg, #0992C2, #4dc8f0)',
+                      border: 'none', borderRadius: '8px', color: 'white', fontSize: '11px',
+                      fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                      gap: '4px', opacity: (otpCode.length !== 6 || otpStep === 'verifying') ? 0.4 : 1,
+                      transition: 'all 0.2s'
                     }}
                   >
-                    <div style={{ padding: '8px', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                        <Search size={14} style={{ color: 'rgba(255,255,255,0.3)' }} />
-                        <input
-                          placeholder="Search..."
-                          value={searchCountry}
-                          onChange={(e) => setSearchCountry(e.target.value)}
-                          autoFocus
-                          style={{ background: 'transparent', border: 'none', outline: 'none', color: 'white', fontSize: '12px', width: '100%' }}
-                        />
-                      </div>
-                    </div>
-                    <div style={{ overflowY: 'auto', flex: 1 }} className="raga-scroll">
-                      {filteredCountries.map((c, idx) => (
-                        <button
-                          key={`${c.name}-${c.code}`}
-                          type="button"
-                          onClick={() => { setSelectedCountry(c); setIsCountryOpen(false); }}
-                          onMouseEnter={() => setActiveCountryIndex(idx)}
-                          style={{
-                            width: '100%',
-                            padding: '10px 12px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: activeCountryIndex === idx ? 'rgba(77, 200, 240, 0.15)' : 'transparent',
-                            border: 'none',
-                            color: activeCountryIndex === idx ? '#4dc8f0' : 'white',
-                            fontSize: '12px',
-                            textAlign: 'left',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s'
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span>{c.flag}</span>
-                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{c.name}</span>
-                          </div>
-                          <span style={{ opacity: 0.5, fontWeight: 600 }}>{c.code}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
-              <Phone size={14} style={{ position: 'absolute', left: '10px', color: '#4dc8f0', opacity: 0.7 }} />
-              <input
-                type="tel"
-                placeholder="Phone Number"
-                value={form.phone}
-                onChange={e => handlePhoneChange(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px 10px 32px',
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'white',
-                  fontSize: '13px',
-                  outline: 'none',
-                  height: '40px'
-                }}
-                onFocus={e => { e.target.parentElement.parentElement.style.borderColor = '#4dc8f0'; }}
-                onBlur={e => { e.target.parentElement.parentElement.style.borderColor = errors.phone ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
-              />
-            </div>
-          </fieldset>
-        </div>
-        {errors.phone && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '-8px', display: 'block', marginLeft: '4px' }}>{errors.phone}</span>}
-
-        {/* Inquiry */}
-        <div style={{ position: 'relative' }}>
-          <FileText size={14} style={{ ...iconStyle, top: '16px', transform: 'none' }} />
-          <textarea
-            placeholder="Describe your project or requirement..."
-            value={form.inquiry}
-            onChange={e => { setForm(p => ({ ...p, inquiry: e.target.value })); if (errors.inquiry) setErrors(p => ({ ...p, inquiry: '' })); }}
-            rows={3}
-            style={{ ...inputStyle(errors.inquiry), paddingTop: '10px', resize: 'none', fontFamily: 'inherit' }}
-            onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
-            onBlur={e => { e.target.style.borderColor = errors.inquiry ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
-          />
-          {errors.inquiry && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '2px', display: 'block' }}>{errors.inquiry}</span>}
-        </div>
-
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          style={{
-            width: '100%', padding: '12px',
-            background: isSubmitting ? 'rgba(9,146,194,0.4)' : 'linear-gradient(135deg, #0992C2, #4dc8f0)',
-            border: 'none', borderRadius: '12px', color: 'white',
-            fontSize: '14px', fontWeight: 700, cursor: isSubmitting ? 'wait' : 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-            transition: 'all 0.3s',
-          }}
-        >
-          {isSubmitting ? (
-            <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
-              <Send size={16} />
+                    {otpStep === 'verifying' ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />}
+                    {otpStep === 'verifying' ? 'Verifying' : 'Verify'}
+                  </button>
+                </div>
+              </div>
             </motion.div>
-          ) : (
-            <>
-              <Send size={16} />
-              Submit Inquiry
-            </>
           )}
-        </button>
+        </AnimatePresence>
+
+        {/* Verified badge */}
+        {otpStep === 'verified' && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
+            background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
+            borderRadius: '10px'
+          }}>
+            <ShieldCheck size={14} style={{ color: '#34d399' }} />
+            <span style={{ color: '#34d399', fontSize: '11px', fontWeight: 600 }}>
+              ✅ Email verified
+            </span>
+          </div>
+        )}
+
+        {/* Phone */}
+        {!(otpStep === 'sent' || otpStep === 'verifying') && (
+          <>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <fieldset style={{
+                position: 'relative',
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                background: errors.phone ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${errors.phone ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'}`,
+                borderRadius: '12px',
+                padding: '0',
+                transition: 'border-color 0.2s',
+                overflow: 'visible'
+              }}>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '100%' }} ref={countryRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsCountryOpen(!isCountryOpen)}
+                    onKeyDown={handleCountryKeyDown}
+                    style={{
+                      background: 'rgba(255,255,255,0.03)',
+                      border: 'none',
+                      borderRight: '1px solid rgba(255,255,255,0.1)',
+                      padding: '10px 8px 10px 12px',
+                      color: 'white',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      borderTopLeftRadius: '12px',
+                      borderBottomLeftRadius: '12px',
+                      height: '40px'
+                    }}
+                  >
+                    {selectedCountry.flag} <span style={{ fontWeight: 600 }}>{selectedCountry.code}</span>
+                    <ChevronDown size={14} style={{ opacity: 0.5 }} />
+                  </button>
+                  <AnimatePresence>
+                    {isCountryOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        style={{
+                          position: 'absolute',
+                          top: '100%',
+                          left: 0,
+                          width: '280px',
+                          maxHeight: '240px',
+                          background: '#0a1929',
+                          border: '1px solid rgba(77,200,240,0.2)',
+                          borderRadius: '12px',
+                          boxShadow: '0 8px 32px rgba(0,0,0,0.8)',
+                          zIndex: 50,
+                          marginTop: '4px',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          flexDirection: 'column'
+                        }}
+                      >
+                        <div style={{ padding: '8px', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                            <Search size={14} style={{ color: 'rgba(255,255,255,0.3)' }} />
+                            <input
+                              placeholder="Search..."
+                              value={searchCountry}
+                              onChange={(e) => setSearchCountry(e.target.value)}
+                              autoFocus
+                              style={{ background: 'transparent', border: 'none', outline: 'none', color: 'white', fontSize: '12px', width: '100%' }}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ overflowY: 'auto', flex: 1 }} className="raga-scroll">
+                          {filteredCountries.map((c, idx) => (
+                            <button
+                              key={`${c.name}-${c.code}`}
+                              type="button"
+                              onClick={() => { setSelectedCountry(c); setIsCountryOpen(false); }}
+                              onMouseEnter={() => setActiveCountryIndex(idx)}
+                              style={{
+                                width: '100%',
+                                padding: '10px 12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                background: activeCountryIndex === idx ? 'rgba(77, 200, 240, 0.15)' : 'transparent',
+                                border: 'none',
+                                color: activeCountryIndex === idx ? '#4dc8f0' : 'white',
+                                fontSize: '12px',
+                                textAlign: 'left',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span>{c.flag}</span>
+                                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{c.name}</span>
+                              </div>
+                              <span style={{ opacity: 0.5, fontWeight: 600 }}>{c.code}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+                  <Phone size={14} style={{ position: 'absolute', left: '10px', color: '#4dc8f0', opacity: 0.7 }} />
+                  <input
+                    type="tel"
+                    placeholder="Phone Number"
+                    value={form.phone}
+                    onChange={e => handlePhoneChange(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px 10px 32px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'white',
+                      fontSize: '13px',
+                      outline: 'none',
+                      height: '40px'
+                    }}
+                    onFocus={e => { e.target.parentElement.parentElement.style.borderColor = '#4dc8f0'; }}
+                    onBlur={e => { e.target.parentElement.parentElement.style.borderColor = errors.phone ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
+                  />
+                </div>
+              </fieldset>
+            </div>
+            {errors.phone && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '-8px', display: 'block', marginLeft: '4px' }}>{errors.phone}</span>}
+
+            {/* Inquiry */}
+            <div style={{ position: 'relative' }}>
+              <FileText size={14} style={{ ...iconStyle, top: '16px', transform: 'none' }} />
+              <textarea
+                placeholder="Describe your project or requirement..."
+                value={form.inquiry}
+                onChange={e => { setForm(p => ({ ...p, inquiry: e.target.value })); if (errors.inquiry) setErrors(p => ({ ...p, inquiry: '' })); }}
+                rows={3}
+                style={{ ...inputStyle(errors.inquiry), paddingTop: '10px', resize: 'none', fontFamily: 'inherit' }}
+                onFocus={e => { e.target.style.borderColor = '#4dc8f0'; }}
+                onBlur={e => { e.target.style.borderColor = errors.inquiry ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'; }}
+              />
+              {errors.inquiry && <span style={{ color: '#ef4444', fontSize: '10px', marginTop: '2px', display: 'block' }}>{errors.inquiry}</span>}
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting || otpStep !== 'verified'}
+              style={{
+                width: '100%', padding: '12px',
+                background: (isSubmitting || otpStep !== 'verified') ? 'rgba(100,100,100,0.3)' : 'linear-gradient(135deg, #0992C2, #4dc8f0)',
+                border: 'none', borderRadius: '12px', color: 'white',
+                fontSize: '14px', fontWeight: 700,
+                cursor: (isSubmitting || otpStep !== 'verified') ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                transition: 'all 0.3s',
+              }}
+            >
+              {isSubmitting ? (
+                <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
+                  <Send size={16} />
+                </motion.div>
+              ) : otpStep !== 'verified' ? (
+                <>
+                  <ShieldCheck size={16} />
+                  Verify Email to Submit
+                </>
+              ) : (
+                <>
+                  Submit Inquiry
+                  <Send size={16} />
+                </>
+              )}
+            </button>
+          </>
+        )}
       </div>
+
+      {/* Spin animation for loader */}
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </motion.form>
   );
 };
@@ -509,12 +807,16 @@ const RagaChatbot = () => {
           });
           const data = await resp.json();
           if (data.success) {
+            // Clean any leaked [ACTION:SHOW_FORM] from greeting
+            let cleanReply = (data.reply || '').replace(/\[ACTION:SHOW_FORM\]/gi, '').trim();
             setMessages([{
               id: 'welcome',
-              text: data.reply,
+              text: cleanReply,
               isUser: false,
-              options: data.options
+              options: data.options,
+              showInquiryButton: data.show_form || false,
             }]);
+            // Don't auto-open form from greeting; show button instead
           } else {
             throw new Error('Defaulting to generic welcome');
           }
@@ -538,16 +840,12 @@ const RagaChatbot = () => {
     }
   }, [isOpen]);
 
-  // Auto-Open for first-time visitors
+  // Auto-Open chatbot on every site visit
   useEffect(() => {
-    const hasAutoOpened = localStorage.getItem('raga_auto_opened');
-    if (!hasAutoOpened) {
-      const timer = setTimeout(() => {
-        setIsOpen(true);
-        localStorage.setItem('raga_auto_opened', 'true');
-      }, 2500); // Wait 2.5s for page to load
-      return () => clearTimeout(timer);
-    }
+    const timer = setTimeout(() => {
+      setIsOpen(true);
+    }, 2500); // Wait 2.5s for page to load
+    return () => clearTimeout(timer);
   }, []);
 
   // Send message to backend
@@ -576,13 +874,19 @@ const RagaChatbot = () => {
       if (data.success) {
         if (data.session_token) setSessionToken(data.session_token);
         if (data.session_id) setSessionId(data.session_id);
+        // Clean any leaked [ACTION:SHOW_FORM] from AI reply text
+        let cleanReply = (data.reply || '').replace(/\[ACTION:SHOW_FORM\]/gi, '').trim();
         setMessages(prev => [...prev, {
           id: Date.now() + 1,
-          text: data.reply,
+          text: cleanReply,
           isUser: false,
-          options: data.options, // Suggestions from AI
+          options: data.options,
+          showInquiryButton: data.show_form || false,
         }]);
         if (!isOpen) setHasNewMessage(true);
+        if (data.show_form) {
+          // Don't auto-open form; user clicks the "Start Inquiry" button in the message
+        }
       } else {
         throw new Error(data.error || 'Failed to get response');
       }
@@ -599,7 +903,8 @@ const RagaChatbot = () => {
   }, [inputValue, sessionToken, isTyping, isOpen]);
 
   // Submit lead form
-  const handleLeadSubmit = async (formData, isConfirmed = false) => {
+  const handleLeadSubmit = async (formDataInput, isConfirmed = false) => {
+    const formData = formDataInput;
     // Step 1: Check for existing lead before proceeding
     if (!isConfirmed && !childSessionId) {
       try {
@@ -644,12 +949,14 @@ const RagaChatbot = () => {
           email: activeData.email,
           phone: activeData.phone,
           inquiry: activeData.inquiry,
+          otp_id: activeData.otp_id || 0,
         }),
       });
 
       const data = await resp.json();
 
       if (data.success) {
+        sessionStorage.setItem('alphenex_inquiry_submitted', 'true');
         setShowLeadForm(false);
         setMessages(prev => [...prev, {
           id: Date.now(),
@@ -897,6 +1204,7 @@ const RagaChatbot = () => {
                   onSubmit={handleLeadSubmit}
                   onBack={() => setShowLeadForm(false)}
                   isSubmitting={isSubmittingLead}
+                  sessionToken={sessionToken}
                 />
               ) : (
                 <motion.div

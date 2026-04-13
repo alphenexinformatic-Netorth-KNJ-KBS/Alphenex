@@ -1,5 +1,5 @@
 import React, { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import ScrollToTop from './components/ScrollToTop';
 import MainLayout from './layouts/MainLayout';
 import { Toaster } from '@/components/ui/toaster';
@@ -86,8 +86,8 @@ function App() {
                   </Suspense>
                 } />
 
-                {/* Catch-all 404 route */}
-                <Route path="*" element={<ErrorPage />} />
+                {/* Catch-all: redirect unknown URLs to home */}
+                <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>
             <Toaster />

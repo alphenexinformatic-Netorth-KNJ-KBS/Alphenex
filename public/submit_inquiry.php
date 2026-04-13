@@ -3,6 +3,9 @@
  * Alphenex Inquiry Form Backend API
  * Handles form submissions and saves them into the MySQL database using PDO.
  * Located at: /public/submit_inquiry.php
+ * 
+ * NOW REQUIRES: OTP verification before submission.
+ * The `otp_id` field must be passed from the frontend after successful email OTP verification.
  */
 
 header("Access-Control-Allow-Origin: *");
@@ -64,20 +67,47 @@ try {
     $email             = trim($data['email'] ?? '');
     $phone             = trim($data['phone'] ?? ''); 
     $company           = trim($data['company'] ?? '');
-    $service           = trim($data['service'] ?? '');
+    $serviceId         = isset($data['service_id']) && $data['service_id'] !== '' ? (int)$data['service_id'] : null;
     $message           = trim($data['message'] ?? ''); 
     $childSessionId    = trim($data['child_session_id'] ?? '');
+    $otpId             = (int)($data['otp_id'] ?? 0);
 
     // Validation
     if (empty($name) || (empty($email) && empty($phone))) {
         throw new Exception("Required contact information is missing.");
     }
 
+    // ============================================================
+    // OTP VERIFICATION CHECK — Form cannot be submitted without it
+    // ============================================================
+    if ($otpId <= 0) {
+        throw new Exception("Email verification is required before submitting the form.");
+    }
+
+    // Verify the OTP record exists, is verified, and belongs to this session + email
+    $otpCheck = $pdo->prepare(
+        "SELECT id, email, is_verified FROM Alphenex_email_otp 
+         WHERE id = :otp_id AND session_token = :stoken AND is_verified = 1 LIMIT 1"
+    );
+    $otpCheck->execute([':otp_id' => $otpId, ':stoken' => $sessionToken]);
+    $otpRecord = $otpCheck->fetch();
+
+    if (!$otpRecord) {
+        throw new Exception("Invalid or expired email verification. Please verify your email again.");
+    }
+
+    // Ensure the verified email matches the submission email
+    if (strtolower($otpRecord['email']) !== strtolower($email)) {
+        throw new Exception("The verified email does not match the email in the form. Please verify the correct email.");
+    }
+
     // --- DEDUPLICATION / CHILD SESSION LOGIC ---
+    $newLeadId = null;
+
     if (!empty($childSessionId)) {
         // This is a NEW requirement in the same session -> ALWAYS INSERT
-        $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, child_session_id, name, email, phone, inquiry, source, Company_name, Service_Interest) 
-                VALUES (:sid, :stoken, :csid, :name, :email, :phone, :inquiry, :source, :company, :service)";
+        $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, child_session_id, name, email, phone, inquiry, source, Company_name, Service_Interest_id) 
+                VALUES (:sid, :stoken, :csid, :name, :email, :phone, :inquiry, :source, :company, :service_id)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':sid'     => $sessionId,
@@ -89,8 +119,9 @@ try {
             ':inquiry' => $message,
             ':source'  => 'Inquiry Form',
             ':company' => $company,
-            ':service' => $service
+            ':service_id' => $serviceId
         ]);
+        $newLeadId = (int)$pdo->lastInsertId();
     } else {
         // Standard submission: check if a 'parent' lead exists for this token (no child ID)
         $check = $pdo->prepare("SELECT id FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
@@ -107,8 +138,8 @@ try {
             exit;
         } else {
             // INSERT new parent lead
-            $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, name, email, phone, inquiry, source, Company_name, Service_Interest) 
-                    VALUES (:sid, :stoken, :name, :email, :phone, :inquiry, :source, :company, :service)";
+            $sql = "INSERT INTO Alphenex_Chat_Leads (session_id, Session_token, name, email, phone, inquiry, source, Company_name, Service_Interest_id) 
+                    VALUES (:sid, :stoken, :name, :email, :phone, :inquiry, :source, :company, :service_id)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
                 ':sid'     => $sessionId,
@@ -119,9 +150,18 @@ try {
                 ':inquiry' => $message,
                 ':source'  => 'Inquiry Form',
                 ':company' => $company,
-                ':service' => $service
+                ':service_id' => $serviceId
             ]);
+            $newLeadId = (int)$pdo->lastInsertId();
         }
+    }
+
+    // ============================================================
+    // LINK OTP RECORD TO THE NEWLY CREATED LEAD
+    // ============================================================
+    if ($newLeadId && $otpId > 0) {
+        $linkOtp = $pdo->prepare("UPDATE Alphenex_email_otp SET lead_id = :lead_id WHERE id = :otp_id");
+        $linkOtp->execute([':lead_id' => $newLeadId, ':otp_id' => $otpId]);
     }
 
     // Send success response

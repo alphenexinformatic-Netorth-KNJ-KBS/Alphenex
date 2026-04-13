@@ -19,6 +19,8 @@ function detectPageName(endpointUrl) {
   if (url.includes('raga.php'))             return 'RagaChatbot.jsx';
   if (url.includes('save_raga_lead.php'))    return 'RagaChatbot.jsx';
   if (url.includes('submit_inquiry.php'))    return 'ContactForm.jsx';
+  if (url.includes('send_otp.php'))          return 'OTP_SendOtp';
+  if (url.includes('verify_otp.php'))        return 'OTP_VerifyOtp';
   
   const path = window.location.pathname.toLowerCase();
   if (path.includes('contact'))             return 'ContactForm.jsx';
@@ -95,6 +97,16 @@ export function initErrorInterceptor() {
       unique_error_id: generateCorrelationId(),
       error_page_name: event.filename?.split('/').pop() || 'Global JS',
       error_message: `${event.message}\nFile: ${event.filename}`,
+    });
+  });
+
+  // Unhandled Promise Rejections
+  window.addEventListener('unhandledrejection', (event) => {
+    reportError({
+      error_source: 'frontend',
+      unique_error_id: generateCorrelationId(),
+      error_page_name: 'Global Promise',
+      error_message: `UNHANDLED REJECTION: ${event.reason?.message || event.reason || 'Unknown'}`,
     });
   });
 }

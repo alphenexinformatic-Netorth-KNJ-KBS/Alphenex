@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
-import { Send, Loader2, ChevronDown, Check, Search } from 'lucide-react';
+import { Send, Loader2, ChevronDown, Check, Search, Mail, ShieldCheck, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useLoading } from '../context/LoadingContext';
@@ -9,27 +9,41 @@ import { useLoading } from '../context/LoadingContext';
 import { allCountries } from '../data/Countries';
 import { useSession } from '../context/SessionContext';
 
-const services = [
-  'AI Automation & SaaS',
-  'Google Ads Management',
-  'Meta Ads (FB & IG)',
-  '10X Sales Funnels',
-  'Global Lead Generation',
-  'Analytics & Reporting',
-  'Looking For other Services'
+const FALLBACK_SERVICES = [
+  { id: 1, service_name: 'AI Automation & SaaS' },
+  { id: 2, service_name: 'Google Ads Management' },
+  { id: 3, service_name: 'Meta Ads (FB & IG)' },
+  { id: 4, service_name: '10X Sales Funnels' },
+  { id: 5, service_name: 'Global Lead Generation' },
+  { id: 6, service_name: 'Analytics & Reporting' },
+  { id: 7, service_name: 'Looking For other Services' }
 ];
+
+// OTP API URLs
+const getApiBase = () => {
+  const viteUrl = import.meta.env.VITE_API_BASE_URL;
+  if (viteUrl) {
+    return viteUrl.replace(/\/submit_inquiry\.php$/, '').replace(/\/+$/, '');
+  }
+  return window.location.hostname === 'localhost' ? 'https://alphenex.com' : window.location.origin;
+};
+
+const OTP_SEND_URL = `${getApiBase()}/api/send_otp.php`;
+const OTP_VERIFY_URL = `${getApiBase()}/api/verify_otp.php`;
+const SERVICES_URL = `${getApiBase()}/api/get_services.php`;
 
 /**
  * Custom Input Component with Floating Label (Sitting in the border)
  * Using fieldset/legend for the native border gap effect
  */
-const FloatingInput = ({ label, name, type = "text", value, onChange, placeholder, error, required = false }) => {
+const FloatingInput = ({ label, name, type = "text", value, onChange, placeholder, error, required = false, disabled = false, rightElement }) => {
   const [isFocused, setIsFocused] = useState(false);
 
   return (
     <div className="w-full relative">
       <fieldset className={`relative rounded-2xl border transition-all duration-300 w-full
-        ${isFocused ? 'border-[#4dc8f0] ring-4 ring-[#4dc8f0]/10' : error ? 'border-red-500/50 bg-red-500/5' : 'border-white/10 bg-white/5 hover:border-white/20'}`}
+        ${isFocused ? 'border-[#4dc8f0] ring-4 ring-[#4dc8f0]/10' : error ? 'border-red-500/50 bg-red-500/5' : 'border-white/10 bg-white/5 hover:border-white/20'}
+        ${disabled ? 'opacity-60 pointer-events-none' : ''}`}
       >
         <legend
           className={`ml-4 px-2 text-xs font-semibold transition-all duration-300
@@ -37,17 +51,21 @@ const FloatingInput = ({ label, name, type = "text", value, onChange, placeholde
         >
           {label} {required && <span className="text-[#4dc8f0]">*</span>}
         </legend>
-        <input
-          type={type}
-          name={name}
-          value={value}
-          onChange={onChange}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          placeholder={placeholder}
-          autoComplete="one-time-code"
-          className="w-full bg-transparent px-5 pb-4 pt-1 text-white outline-none placeholder:text-gray-600"
-        />
+        <div className="flex items-center">
+          <input
+            type={type}
+            name={name}
+            value={value}
+            onChange={onChange}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder={placeholder}
+            autoComplete="one-time-code"
+            disabled={disabled}
+            className="w-full bg-transparent px-5 pb-4 pt-1 text-white outline-none placeholder:text-gray-600"
+          />
+          {rightElement && <div className="pr-3 pb-2">{rightElement}</div>}
+        </div>
       </fieldset>
       {error && <p className="absolute -bottom-5 left-1 text-[10px] text-red-400 font-medium uppercase tracking-wider">{error}</p>}
     </div>
@@ -65,9 +83,11 @@ function ContactForm() {
     phone: '',
     company: '',
     service: '',
+    service_id: '',
     message: '',
   });
   const [errors, setErrors] = useState({});
+  const [services, setServices] = useState(FALLBACK_SERVICES);
 
   const [selectedCountry, setSelectedCountry] = useState(allCountries.find(c => c.name === 'India') || allCountries[0]);
   const [isCountryOpen, setIsCountryOpen] = useState(false);
@@ -79,12 +99,39 @@ function ContactForm() {
   const { sessionToken, sessionId, setSessionId } = useSession();
   const [childSessionId, setChildSessionId] = useState('');
 
+  // ═══════════════════════════════════════════════════
+  // OTP State
+  // ═══════════════════════════════════════════════════
+  const [otpStep, setOtpStep] = useState('idle'); // idle | sending | sent | verifying | verified
+  const [otpCode, setOtpCode] = useState('');
+  const [otpId, setOtpId] = useState(null);
+  const [otpError, setOtpError] = useState('');
+  const [otpCountdown, setOtpCountdown] = useState(0);
+  const [canResend, setCanResend] = useState(false);
+  const otpInputRefs = useRef([]);
+
   // Track focused index for keyboard navigation
   const [activeCountryIndex, setActiveCountryIndex] = useState(-1);
   const [activeServiceIndex, setActiveServiceIndex] = useState(-1);
 
   const countryRef = useRef(null);
   const serviceRef = useRef(null);
+
+  // Load services from database
+  useEffect(() => {
+    const fetchServices = async () => {
+      try {
+        const resp = await fetch(SERVICES_URL);
+        const data = await resp.json();
+        if (data.status === 'success' && data.services && data.services.length > 0) {
+          setServices(data.services);
+        }
+      } catch (err) {
+        console.error("Failed to load services:", err);
+      }
+    };
+    fetchServices();
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -100,6 +147,16 @@ function ContactForm() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // OTP countdown timer
+  useEffect(() => {
+    if (otpCountdown > 0) {
+      const timer = setTimeout(() => setOtpCountdown(otpCountdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (otpCountdown === 0 && otpStep === 'sent') {
+      setCanResend(true);
+    }
+  }, [otpCountdown, otpStep]);
 
   // Keyboard navigation logic
   const handleCountryKeyDown = (e) => {
@@ -135,7 +192,8 @@ function ContactForm() {
       setActiveServiceIndex(prev => (prev > 0 ? prev - 1 : count - 1));
     } else if (e.key === 'Enter' && activeServiceIndex >= 0) {
       e.preventDefault();
-      setFormData(prev => ({ ...prev, service: services[activeServiceIndex] }));
+      const s = services[activeServiceIndex];
+      setFormData(prev => ({ ...prev, service: s.service_name, service_id: s.id }));
       setIsServiceOpen(false);
       setActiveServiceIndex(-1);
     } else if (e.key === 'Escape') {
@@ -187,14 +245,173 @@ function ContactForm() {
       return;
     }
 
+    // If email changes, reset OTP state
+    if (name === 'email') {
+      if (otpStep === 'verified' || otpStep === 'sent') {
+        setOtpStep('idle');
+        setOtpCode('');
+        setOtpId(null);
+        setOtpError('');
+        setOtpCountdown(0);
+        setCanResend(false);
+      }
+    }
+
     setFormData((prev) => ({ ...prev, [name]: value }));
     if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }));
+  };
+
+  // ═══════════════════════════════════════════════════
+  // SEND OTP
+  // ═══════════════════════════════════════════════════
+  const handleSendOtp = async () => {
+    // Validate email first
+    if (!formData.email.trim()) {
+      setErrors(prev => ({ ...prev, email: 'Email address is required' }));
+      return;
+    }
+    if (!/^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(formData.email)) {
+      setErrors(prev => ({ ...prev, email: 'Enter a valid email (e.g. you@company.com)' }));
+      return;
+    }
+
+    setOtpStep('sending');
+    setOtpError('');
+
+    try {
+      const resp = await fetch(OTP_SEND_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: formData.email,
+          session_token: sessionToken,
+          source: 'contact_form'
+        }),
+      });
+
+      const result = await resp.json();
+
+      if (result.success) {
+        setOtpStep('sent');
+        setOtpId(result.otp_id);
+        setOtpCountdown(60); // 60 seconds before resend
+        setCanResend(false);
+        setOtpCode('');
+        toast({ 
+          title: '📧 OTP Sent!', 
+          description: `A 6-digit code has been sent to ${formData.email}`,
+        });
+      } else {
+        setOtpStep('idle');
+        setOtpError(result.error || 'Failed to send OTP.');
+        toast({ title: 'Error', description: result.error || 'Failed to send OTP.', variant: 'destructive' });
+      }
+    } catch (err) {
+      setOtpStep('idle');
+      setOtpError('Network error. Please try again.');
+      toast({ title: 'Error', description: 'Failed to send verification code.', variant: 'destructive' });
+    }
+  };
+
+  // ═══════════════════════════════════════════════════
+  // VERIFY OTP
+  // ═══════════════════════════════════════════════════
+  const handleVerifyOtp = async (codeOverride) => {
+    const code = codeOverride || otpCode;
+    if (code.length !== 6) {
+      setOtpError('Please enter the complete 6-digit code.');
+      return;
+    }
+
+    setOtpStep('verifying');
+    setOtpError('');
+
+    try {
+      const resp = await fetch(OTP_VERIFY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: formData.email,
+          otp_code: code,
+          session_token: sessionToken,
+        }),
+      });
+
+      const result = await resp.json();
+
+      if (result.success) {
+        setOtpStep('verified');
+        setOtpId(result.otp_id);
+        setOtpError('');
+        toast({ title: '✅ Verified!', description: 'Email successfully verified.' });
+      } else {
+        setOtpStep('sent');
+        setOtpError(result.error || 'Invalid code.');
+        if (result.expired || result.max_attempts) {
+          setOtpStep('idle');
+          setOtpCode('');
+        }
+      }
+    } catch (err) {
+      setOtpStep('sent');
+      setOtpError('Network error. Please try again.');
+    }
+  };
+
+  // Handle individual OTP digit inputs
+  const handleOtpDigitChange = (index, value) => {
+    if (!/^\d*$/.test(value)) return; // Only digits
+    
+    const newCode = otpCode.split('');
+    newCode[index] = value.slice(-1); // Take last character only
+    const joined = newCode.join('').slice(0, 6);
+    setOtpCode(joined);
+    setOtpError('');
+
+    // Auto-focus next input
+    if (value && index < 5) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+    
+    // Auto-verify when all 6 digits are entered
+    if (joined.length === 6 && index === 5) {
+      handleVerifyOtp(joined);
+    }
+  };
+
+  const handleOtpKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !otpCode[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleOtpPaste = (e) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (pastedData.length > 0) {
+      setOtpCode(pastedData);
+      const lastIndex = Math.min(pastedData.length - 1, 5);
+      otpInputRefs.current[lastIndex]?.focus();
+      if (pastedData.length === 6) {
+        handleVerifyOtp(pastedData);
+      }
+    }
   };
 
   const handleSubmit = async (e, isConfirmed = false) => {
     if (e) e.preventDefault();
     if (!validateForm()) {
       toast({ title: 'Validation Needed', description: 'Please check your information.', variant: 'destructive' });
+      return;
+    }
+
+    // ═══ OTP GATE: Block submission without verified OTP ═══
+    if (otpStep !== 'verified') {
+      toast({ 
+        title: '⚠️ Email Verification Required', 
+        description: 'Please verify your email address before submitting.',
+        variant: 'destructive' 
+      });
       return;
     }
 
@@ -227,7 +444,9 @@ function ContactForm() {
       ...formData, 
       phone: finalPhone, 
       session_token: sessionToken,
-      child_session_id: childSessionId 
+      child_session_id: childSessionId,
+      otp_id: otpId,  // ← Pass verified OTP ID to backend
+      service_id: formData.service_id // pass the service ID
     };
 
     try {
@@ -239,14 +458,21 @@ function ContactForm() {
 
       const result = await resp.json();
       if (resp.ok && result.status === 'success') {
+        sessionStorage.setItem('alphenex_inquiry_submitted', 'true');
         setShowSuccessModal(true);
-        setFormData({ name: '', email: '', phone: '', company: '', service: '', message: '' });
+        setFormData({ name: '', email: '', phone: '', company: '', service: '', service_id: '', message: '' });
         setChildSessionId(''); // Reset child session
+        // Reset OTP state after successful submission
+        setOtpStep('idle');
+        setOtpCode('');
+        setOtpId(null);
+        setOtpError('');
+        setOtpCountdown(0);
       } else {
         throw new Error(result.message || 'Server error');
       }
     } catch (error) {
-      toast({ title: 'Error', description: 'Connection failed. Please WhatsApp us directly.', variant: 'destructive' });
+      toast({ title: 'Error', description: error.message || 'Connection failed. Please WhatsApp us directly.', variant: 'destructive' });
     } finally {
       setIsSubmitting(false);
       stopLoading();
@@ -272,6 +498,13 @@ function ContactForm() {
     c.code.includes(searchCountry)
   );
 
+  // Format countdown as MM:SS
+  const formatCountdown = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   return (
     <form onSubmit={handleSubmit} className="space-y-10" autoComplete="off">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-10">
@@ -285,6 +518,7 @@ function ContactForm() {
           required
         />
 
+        {/* Email with OTP Button */}
         <FloatingInput
           label="Email"
           name="email"
@@ -294,6 +528,29 @@ function ContactForm() {
           placeholder="Enter your email address"
           error={errors.email}
           required
+          disabled={otpStep === 'verified'}
+          rightElement={
+            otpStep === 'verified' ? (
+              <div className="flex items-center gap-1 text-emerald-400 text-xs font-bold whitespace-nowrap">
+                <ShieldCheck size={16} />
+                Verified
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSendOtp}
+                disabled={otpStep === 'sending' || !formData.email.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#4dc8f0]/15 border border-[#4dc8f0]/30 text-[#4dc8f0] text-xs font-bold rounded-lg hover:bg-[#4dc8f0]/25 transition-all whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {otpStep === 'sending' ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Mail size={14} />
+                )}
+                {otpStep === 'sending' ? 'Sending...' : otpStep === 'sent' ? 'Resend' : 'Verify'}
+              </button>
+            )
+          }
         />
 
         {/* Phone with Country Picker */}
@@ -387,6 +644,127 @@ function ContactForm() {
         />
       </div>
 
+      {/* ═══════════════════════════════════════════════════
+          OTP VERIFICATION SECTION — Shows after "Verify" is clicked
+          ═══════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {(otpStep === 'sent' || otpStep === 'verifying') && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className="relative rounded-2xl border border-[#4dc8f0]/20 bg-[#4dc8f0]/5 p-6 overflow-hidden">
+              {/* Glowing border effect */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-[#0992C2]/5 via-[#4dc8f0]/10 to-[#0992C2]/5 animate-pulse pointer-events-none" />
+              
+              <div className="relative z-10">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0992C2] to-[#4dc8f0] flex items-center justify-center shadow-lg shadow-[#4dc8f0]/20">
+                    <ShieldCheck size={20} className="text-white" />
+                  </div>
+                  <div>
+                    <h4 className="text-white text-sm font-bold">Email Verification</h4>
+                    <p className="text-gray-400 text-xs">
+                      Enter the 6-digit code sent to <span className="text-[#4dc8f0] font-semibold">{formData.email}</span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* 6-Digit OTP Input Boxes */}
+                <div className="flex justify-center gap-3 mb-4">
+                  {[0, 1, 2, 3, 4, 5].map((i) => (
+                    <input
+                      key={i}
+                      ref={(el) => (otpInputRefs.current[i] = el)}
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={1}
+                      value={otpCode[i] || ''}
+                      onChange={(e) => handleOtpDigitChange(i, e.target.value)}
+                      onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                      onPaste={i === 0 ? handleOtpPaste : undefined}
+                      disabled={otpStep === 'verifying'}
+                      className={`w-12 h-14 text-center text-xl font-bold rounded-xl border-2 outline-none transition-all duration-300 bg-[#020c1b]
+                        ${otpError ? 'border-red-500/50 text-red-400 animate-shake' : 
+                          otpCode[i] ? 'border-[#4dc8f0]/60 text-[#4dc8f0] shadow-[0_0_15px_rgba(77,200,240,0.15)]' : 
+                          'border-white/10 text-white'}
+                        focus:border-[#4dc8f0] focus:ring-2 focus:ring-[#4dc8f0]/20
+                        ${otpStep === 'verifying' ? 'opacity-50' : ''}`}
+                    />
+                  ))}
+                </div>
+
+                {/* OTP Error Message */}
+                {otpError && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-red-400 text-xs text-center mb-3 font-medium"
+                  >
+                    {otpError}
+                  </motion.p>
+                )}
+
+                {/* Countdown + Resend */}
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-gray-500">
+                    {otpCountdown > 0 ? (
+                      <span>Resend in <span className="text-[#4dc8f0] font-bold">{formatCountdown(otpCountdown)}</span></span>
+                    ) : (
+                      canResend && (
+                        <button
+                          type="button"
+                          onClick={handleSendOtp}
+                          className="flex items-center gap-1.5 text-[#4dc8f0] font-semibold hover:text-white transition-colors"
+                        >
+                          <RefreshCw size={12} />
+                          Resend Code
+                        </button>
+                      )
+                    )}
+                  </div>
+                  
+                  <button
+                    type="button"
+                    onClick={() => handleVerifyOtp()}
+                    disabled={otpCode.length !== 6 || otpStep === 'verifying'}
+                    className="px-6 py-2 bg-gradient-to-r from-[#0992C2] to-[#4dc8f0] text-white text-sm font-bold rounded-xl hover:shadow-[0_0_20px_rgba(77,200,240,0.3)] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {otpStep === 'verifying' ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Check size={14} />
+                    )}
+                    {otpStep === 'verifying' ? 'Verifying...' : 'Verify'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Verified Badge */}
+      <AnimatePresence>
+        {otpStep === 'verified' && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="flex items-center gap-3 px-5 py-3.5 rounded-2xl border border-emerald-500/20 bg-emerald-500/5"
+          >
+            <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
+              <ShieldCheck size={18} className="text-emerald-400" />
+            </div>
+            <p className="text-emerald-400 text-sm font-semibold">
+              ✅ Email verified — <span className="text-emerald-300">{formData.email}</span>
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Service Interest */}
       <div className="relative group w-full" ref={serviceRef}>
         <fieldset className={`relative rounded-2xl border transition-all duration-300 w-full
@@ -415,19 +793,19 @@ function ContactForm() {
               initial={{ opacity: 0, scale: 0.98, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.98, y: 10 }}
-              className="absolute top-full left-0 right-0 mt-3 bg-[#020c1b] backdrop-blur-3xl border border-white/10 rounded-2xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] z-50 overflow-hidden"
+              className="absolute top-full left-0 right-0 mt-3 bg-[#020c1b] backdrop-blur-3xl border border-white/10 rounded-2xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] z-50 max-h-[300px] overflow-y-auto custom-scrollbar"
             >
-              {services.map((service, idx) => (
+              {services.map((s, idx) => (
                 <button
-                  key={service}
+                  key={s.id || s.service_name}
                   type="button"
-                  onClick={() => { setFormData(p => ({ ...p, service })); setIsServiceOpen(false); }}
+                  onClick={() => { setFormData(p => ({ ...p, service: s.service_name, service_id: s.id })); setIsServiceOpen(false); }}
                   onMouseEnter={() => setActiveServiceIndex(idx)}
                   className={`w-full px-6 py-4 flex items-center justify-between transition-all text-left
                     ${activeServiceIndex === idx ? 'bg-[#4dc8f0]/15 text-[#4dc8f0]' : 'text-white hover:bg-white/5'}`}
                 >
-                  <span className={formData.service === service || activeServiceIndex === idx ? 'font-bold' : ''}>{service}</span>
-                  {(formData.service === service || activeServiceIndex === idx) && <Check size={18} className="text-[#4dc8f0]" />}
+                  <span className={formData.service === s.service_name || activeServiceIndex === idx ? 'font-bold' : ''}>{s.service_name}</span>
+                  {(formData.service === s.service_name || activeServiceIndex === idx) && <Check size={18} className="text-[#4dc8f0]" />}
                 </button>
               ))}
             </motion.div>
@@ -461,12 +839,15 @@ function ContactForm() {
 
       <Button
         type="submit"
-        disabled={isSubmitting}
-        className="w-full h-16 bg-gradient-to-r from-[#0992C2] to-[#4dc8f0] hover:from-[#4dc8f0] hover:to-[#0992C2] text-white font-bold text-lg rounded-2xl shadow-xl hover:shadow-[0_0_40px_rgba(77,200,240,0.5)] transition-all duration-500 active:scale-95 group relative overflow-hidden"
+        disabled={isSubmitting || otpStep !== 'verified'}
+        className={`w-full h-16 text-white font-bold text-lg rounded-2xl shadow-xl transition-all duration-500 active:scale-95 group relative overflow-hidden
+          ${otpStep === 'verified' 
+            ? 'bg-gradient-to-r from-[#0992C2] to-[#4dc8f0] hover:from-[#4dc8f0] hover:to-[#0992C2] hover:shadow-[0_0_40px_rgba(77,200,240,0.5)]' 
+            : 'bg-gray-700/50 cursor-not-allowed'}`}
       >
         <span className="relative z-10 flex items-center justify-center gap-4">
           {isSubmitting ? <Loader2 className="animate-spin h-6 w-6" /> : <Send className="h-6 w-6 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />}
-          {isSubmitting ? 'Submitting Details...' : 'Request My Free Strategy Session'}
+          {isSubmitting ? 'Submitting Details...' : otpStep !== 'verified' ? '🔒 Verify Email to Submit' : 'Request My Free Strategy Session'}
         </span>
       </Button>
 
@@ -556,6 +937,18 @@ function ContactForm() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Shake animation for error state */}
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-4px); }
+          40% { transform: translateX(4px); }
+          60% { transform: translateX(-4px); }
+          80% { transform: translateX(4px); }
+        }
+        .animate-shake { animation: shake 0.4s ease-in-out; }
+      `}</style>
     </form>
   );
 }

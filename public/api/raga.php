@@ -40,7 +40,6 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 require_once __DIR__ . '/raga_config.php';
 require_once __DIR__ . '/raga_knowledge.php';
 require_once __DIR__ . '/log_error.php';
-require_once __DIR__ . '/raga_lead_staging.php'; // New lead staging system
 
 /**
  * Generate a cryptographically secure session token
@@ -81,18 +80,23 @@ function resolveSession(PDO $pdo, ?string $token): array
         $activeToken = generateSessionToken();
     }
 
-    // Attempt to resolve user's name and session_id from Leads table
-    $stmt = $pdo->prepare("SELECT session_id, name FROM Alphenex_Chat_Leads WHERE Session_token = :token AND child_session_id IS NULL LIMIT 1");
+    // Fetch ALL inquiries registered by this user
+    $stmt = $pdo->prepare("SELECT name, email, phone, inquiry AS details FROM Alphenex_Chat_Leads WHERE Session_token = :token ORDER BY id ASC");
     $stmt->execute([':token' => $activeToken]);
-    $lead = $stmt->fetch();
+    $inquiries = $stmt->fetchAll();
 
-    // If no numeric ID found, generate a deterministic one
-    $sessionId = ($lead && !empty($lead['session_id'])) ? (int)$lead['session_id'] : (abs(crc32($activeToken)) % 100000000);
+    $userName = null;
+    if (count($inquiries) > 0) {
+        $userName = $inquiries[0]['name'] ?? null;
+    }
+
+    $sessionId = abs(crc32($activeToken)) % 100000000;
 
     return [
         'id' => $sessionId,
         'session_token' => $activeToken,
-        'user_name' => $lead['name'] ?? null
+        'user_name' => $userName,
+        'inquiries' => $inquiries
     ];
 }
 
@@ -347,16 +351,25 @@ try {
 
     // --- NEW: SPECIAL GREETING HANDLER ---
     if (isset($data['is_greeting']) && $data['is_greeting'] === true) {
-        $systemPrompt = getRagaSystemPrompt($userName, $isReturning);
+        $systemPrompt = getRagaSystemPrompt($userName, $isReturning, $session['inquiries']);
         // Virtual trigger to get the first greeting from AI
         $greetingReply = callAI($systemPrompt, [], "START_CONVERSATION");
+        $greetingReply = html_entity_decode($greetingReply, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        
+        // Parse and strip action triggers from greeting
+        $showForm = false;
+        if (str_contains($greetingReply, '[ACTION:SHOW_FORM]')) {
+            $showForm = true;
+            $greetingReply = trim(str_replace('[ACTION:SHOW_FORM]', '', $greetingReply));
+        }
         
         echo json_encode([
             "success" => true,
             "session_token" => $activeToken,
             "session_id" => $sessionId,
-            "reply" => html_entity_decode($greetingReply, ENT_QUOTES | ENT_HTML5, 'UTF-8'),
-            "is_returning" => $isReturning
+            "reply" => $greetingReply,
+            "is_returning" => $isReturning,
+            "show_form" => $showForm
         ]);
         exit;
     }
@@ -368,7 +381,7 @@ try {
     $history = loadChatHistory($pdo, $activeToken);
 
     // Get system knowledge prompt with returning user context
-    $systemPrompt = getRagaSystemPrompt($userName, $isReturning);
+    $systemPrompt = getRagaSystemPrompt($userName, $isReturning, $session['inquiries']);
 
     // Call LLM securely (API key stays server-side)
     $aiReply = callAI($systemPrompt, $history, $userMessage);
@@ -376,66 +389,23 @@ try {
     // Decode HTML entities back for storage and display
     $aiReply = html_entity_decode($aiReply, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
+    // Parse action triggers
+    $showForm = false;
+    if (str_contains($aiReply, '[ACTION:SHOW_FORM]')) {
+        $showForm = true;
+        // Remove it from the text shown to the user
+        $aiReply = trim(str_replace('[ACTION:SHOW_FORM]', '', $aiReply));
+    }
+
     // Save assistant reply to database
     saveMessage($pdo, $sessionId, $activeToken, 'assistant', $aiReply);
-
-
-    // --- NEW: LEAD STAGING & AUTO-SAVE INTEGRATION ---
-    // Extract potential lead info from user message (Regex sniffing)
-    $extracted = [];
-    
-    // Sniff for Email
-    if (preg_match('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $userMessage, $match)) {
-        $extracted['email'] = $match[0];
-    }
-    
-    // Sniff for Phone (Look for sequences of 7+ digits)
-    if (preg_match('/(?:\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}|\d{7,13}/', $userMessage, $match)) {
-        $extracted['phone'] = $match[0];
-    }
-    
-    // Sniff for Name (Heuristic: "My name is John", "I am John", "Call me John")
-    if (preg_match('/(?:my name is|i am|call me|i\'m|this is) ([a-zA-Z\s]{2,30})/i', $userMessage, $match)) {
-        $extracted['name'] = trim($match[1]);
-    }
-    
-    // Sniff for Inquiry (If message is long or contains "need", "want", "looking for")
-    if (mb_strlen($userMessage) > 15 && preg_match('/(?:need|want|looking for|help with|project|develop|build|service|seo|design|marketing) (.*)/i', $userMessage, $match)) {
-        $extracted['inquiry'] = trim($match[0]);
-    }
-
-    // Process the staged lead (Update JSON + Auto-save to DB if complete)
-    if (!empty($extracted)) {
-        processStagedLead($activeToken, $extracted);
-    }
-
-    // --- NEW: AI-ASSISTED DATA EXTRACTION ---
-    // If AI appended a [DATA]{...}[/DATA] block, extract and use it
-    if (preg_match('/\[DATA\](.*?)\[\/DATA\]/s', $aiReply, $match)) {
-        $aiJson = $match[1];
-        $aiExtracted = json_decode($aiJson, true);
-        
-        // Strip the data block from the user-facing reply
-        $aiReply = trim(preg_replace('/\[DATA\].*?\[\/DATA\]/s', '', $aiReply));
-        
-        if ($aiExtracted && is_array($aiExtracted)) {
-            // Filter out nulls/dummy values
-            $cleanAiData = array_filter($aiExtracted, function($v) { 
-                return $v !== null && $v !== '' && strtolower($v) !== 'null'; 
-            });
-            
-            if (!empty($cleanAiData)) {
-                processStagedLead($activeToken, $cleanAiData);
-            }
-        }
-    }
-    // ------------------------------------------
 
     // Return response — NEVER include API key, token, or internal details
     echo json_encode([
         "success" => true,
         "session_token" => $activeToken,
         "reply" => $aiReply,
+        "show_form" => $showForm
     ]);
 
 } catch (PDOException $e) {

@@ -26,7 +26,7 @@ const getApiBase = () => {
   }
   return window.location.hostname === 'localhost' ? 'http://localhost:5001' : 'https://api.alphenex.com';
 };
-
+//const a for testing
 const API_BASE = getApiBase();
 const OTP_SEND_URL = `${API_BASE}/api/v1/website/otp/send`;
 const OTP_VERIFY_URL = `${API_BASE}/api/v1/website/otp/verify`;
@@ -299,8 +299,8 @@ function ContactForm() {
         setOtpCountdown(60); // 60 seconds before resend
         setCanResend(false);
         setOtpCode('');
-        toast({ 
-          title: '📧 OTP Sent!', 
+        toast({
+          title: '📧 OTP Sent!',
           description: `A 6-digit code has been sent to ${formData.email}`,
         });
       } else {
@@ -363,7 +363,7 @@ function ContactForm() {
   // Handle individual OTP digit inputs
   const handleOtpDigitChange = (index, value) => {
     if (!/^\d*$/.test(value)) return; // Only digits
-    
+
     const newCode = otpCode.split('');
     newCode[index] = value.slice(-1); // Take last character only
     const joined = newCode.join('').slice(0, 6);
@@ -374,7 +374,7 @@ function ContactForm() {
     if (value && index < 5) {
       otpInputRefs.current[index + 1]?.focus();
     }
-    
+
     // Auto-verify when all 6 digits are entered
     if (joined.length === 6 && index === 5) {
       handleVerifyOtp(joined);
@@ -409,10 +409,10 @@ function ContactForm() {
 
     // ═══ OTP GATE: Block submission without verified OTP ═══
     if (otpStep !== 'verified') {
-      toast({ 
-        title: '⚠️ Email Verification Required', 
+      toast({
+        title: '⚠️ Email Verification Required',
         description: 'Please verify your email address before submitting.',
-        variant: 'destructive' 
+        variant: 'destructive'
       });
       return;
     }
@@ -440,9 +440,9 @@ function ContactForm() {
     setIsSubmitting(true);
     startLoading();
     const finalPhone = `${selectedCountry.code}${formData.phone.replace(/\D/g, '')}`;
-    const submissionData = { 
-      ...formData, 
-      phone: finalPhone, 
+    const submissionData = {
+      ...formData,
+      phone: finalPhone,
       session_token: sessionToken,
       child_session_id: childSessionId,
       otp_id: otpId,  // ← Pass verified OTP ID to backend
@@ -658,7 +658,7 @@ function ContactForm() {
             <div className="relative rounded-2xl border border-[#4dc8f0]/20 bg-[#4dc8f0]/5 p-6 overflow-hidden">
               {/* Glowing border effect */}
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-[#0992C2]/5 via-[#4dc8f0]/10 to-[#0992C2]/5 animate-pulse pointer-events-none" />
-              
+
               <div className="relative z-10">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0992C2] to-[#4dc8f0] flex items-center justify-center shadow-lg shadow-[#4dc8f0]/20">
@@ -687,9 +687,9 @@ function ContactForm() {
                       onPaste={i === 0 ? handleOtpPaste : undefined}
                       disabled={otpStep === 'verifying'}
                       className={`w-12 h-14 text-center text-xl font-bold rounded-xl border-2 outline-none transition-all duration-300 bg-[#020c1b]
-                        ${otpError ? 'border-red-500/50 text-red-400 animate-shake' : 
-                          otpCode[i] ? 'border-[#4dc8f0]/60 text-[#4dc8f0] shadow-[0_0_15px_rgba(77,200,240,0.15)]' : 
-                          'border-white/10 text-white'}
+                        ${otpError ? 'border-red-500/50 text-red-400 animate-shake' :
+                          otpCode[i] ? 'border-[#4dc8f0]/60 text-[#4dc8f0] shadow-[0_0_15px_rgba(77,200,240,0.15)]' :
+                            'border-white/10 text-white'}
                         focus:border-[#4dc8f0] focus:ring-2 focus:ring-[#4dc8f0]/20
                         ${otpStep === 'verifying' ? 'opacity-50' : ''}`}
                     />
@@ -725,7 +725,7 @@ function ContactForm() {
                       )
                     )}
                   </div>
-                  
+
                   <button
                     type="button"
                     onClick={() => handleVerifyOtp()}
@@ -841,8 +841,8 @@ function ContactForm() {
         type="submit"
         disabled={isSubmitting || otpStep !== 'verified'}
         className={`w-full h-16 text-white font-bold text-lg rounded-2xl shadow-xl transition-all duration-500 active:scale-95 group relative overflow-hidden
-          ${otpStep === 'verified' 
-            ? 'bg-gradient-to-r from-[#0992C2] to-[#4dc8f0] hover:from-[#4dc8f0] hover:to-[#0992C2] hover:shadow-[0_0_40px_rgba(77,200,240,0.5)]' 
+          ${otpStep === 'verified'
+            ? 'bg-gradient-to-r from-[#0992C2] to-[#4dc8f0] hover:from-[#4dc8f0] hover:to-[#0992C2] hover:shadow-[0_0_40px_rgba(77,200,240,0.5)]'
             : 'bg-gray-700/50 cursor-not-allowed'}`}
       >
         <span className="relative z-10 flex items-center justify-center gap-4">
@@ -916,7 +916,7 @@ function ContactForm() {
                 You already have submitted and received an invitation mail. <br />
                 Do you want to re-enter your new requirement details?
               </p>
-              
+
               <div className="flex flex-col gap-4">
                 <button
                   type="button"

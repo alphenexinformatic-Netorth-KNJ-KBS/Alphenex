@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: alphenexinformatic-netorth-knj-kbs/alphenex
 
 jobs:
   build-and-push:

@@ -15,14 +15,20 @@ import { useToast } from '@/components/ui/use-toast';
 // No API keys, auth tokens, or secrets exist in this file.
 // ============================================================
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL
-  ? import.meta.env.VITE_API_BASE_URL.replace(/\/submit_inquiry\.php$/, '').replace(/\/+$/, '')
-  : (window.location.hostname === 'localhost' ? 'https://alphenex.com' : window.location.origin);
+const getApiBase = () => {
+  const viteUrl = import.meta.env.VITE_API_BASE_URL;
+  if (viteUrl) {
+    return viteUrl.replace(/\/+$/, '');
+  }
+  return window.location.hostname === 'localhost' ? 'http://localhost:5001' : 'https://api.alphenex.com';
+};
 
-const RAGA_CHAT_URL = `${API_BASE}/api/raga.php`;
-const RAGA_LEAD_URL = `${API_BASE}/api/save_raga_lead.php`;
-const OTP_SEND_URL = `${API_BASE}/api/send_otp.php`;
-const OTP_VERIFY_URL = `${API_BASE}/api/verify_otp.php`;
+const API_BASE = getApiBase();
+
+const RAGA_CHAT_URL = `${API_BASE}/api/v1/website/raga/chat`;
+const RAGA_LEAD_URL = `${API_BASE}/api/v1/website/raga/lead`;
+const OTP_SEND_URL = `${API_BASE}/api/v1/website/otp/send`;
+const OTP_VERIFY_URL = `${API_BASE}/api/v1/website/otp/verify`;
 const SESSION_KEY = 'raga_session_token';
 
 // ─── Typing Indicator ────────────────────────────────────────

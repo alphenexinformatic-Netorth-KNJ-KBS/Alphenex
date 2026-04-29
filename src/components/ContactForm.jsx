@@ -19,18 +19,20 @@ const FALLBACK_SERVICES = [
   { id: 7, service_name: 'Looking For other Services' }
 ];
 
-// OTP API URLs
 const getApiBase = () => {
   const viteUrl = import.meta.env.VITE_API_BASE_URL;
   if (viteUrl) {
-    return viteUrl.replace(/\/submit_inquiry\.php$/, '').replace(/\/+$/, '');
+    return viteUrl.replace(/\/+$/, '');
   }
-  return window.location.hostname === 'localhost' ? 'https://alphenex.com' : window.location.origin;
+  return window.location.hostname === 'localhost' ? 'http://localhost:5001' : 'https://api.alphenex.com';
 };
 
-const OTP_SEND_URL = `${getApiBase()}/api/send_otp.php`;
-const OTP_VERIFY_URL = `${getApiBase()}/api/verify_otp.php`;
-const SERVICES_URL = `${getApiBase()}/api/get_services.php`;
+const API_BASE = getApiBase();
+const OTP_SEND_URL = `${API_BASE}/api/v1/website/otp/send`;
+const OTP_VERIFY_URL = `${API_BASE}/api/v1/website/otp/verify`;
+const SERVICES_URL = `${API_BASE}/api/v1/website/services`;
+const INQUIRY_URL = `${API_BASE}/api/v1/website/inquiry`;
+const INQUIRY_CHECK_URL = `${API_BASE}/api/v1/website/inquiry/check`;
 
 /**
  * Custom Input Component with Floating Label (Sitting in the border)
@@ -415,15 +417,13 @@ function ContactForm() {
       return;
     }
 
-    const API_URL = import.meta.env.VITE_API_BASE_URL || '/submit_inquiry.php';
-
     // Step 1: Logic to check for existing submission before proceeding
     if (!isConfirmed && !childSessionId) {
       try {
-        const checkResp = await fetch(API_URL, {
+        const checkResp = await fetch(INQUIRY_CHECK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'check_existing', session_token: sessionToken }),
+          body: JSON.stringify({ session_token: sessionToken }),
         });
         const checkResult = await checkResp.json();
         if (checkResult.exists) {
@@ -450,7 +450,7 @@ function ContactForm() {
     };
 
     try {
-      const resp = await fetch(API_URL, {
+      const resp = await fetch(INQUIRY_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(submissionData),

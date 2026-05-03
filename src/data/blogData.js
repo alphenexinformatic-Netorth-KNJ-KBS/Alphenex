@@ -27,6 +27,33 @@ export const blogPosts = [
     readTime: '5 min read'
   },
   {
+    id: 'social-media-trends-2027',
+    title: 'Top Social Media Trends to Watch in 2026',
+    excerpt: 'Discover the emerging technologies and consumer behaviors that will shape the social media landscape this year.',
+    content: `
+      <p>As we navigate through 2026, the social media landscape continues to evolve at a breakneck pace. From AI-driven content personalization to the resurgence of long-form video, brands must adapt quickly to stay relevant.</p>
+      
+      <h3>1. AI-Generated Content with a Human Touch</h3>
+      <p>Artificial Intelligence is no longer just a buzzword; it's a fundamental tool for creators. However, the most successful brands are those that use AI to enhance, not replace, human creativity. Authenticity remains the key currency in digital marketing.</p>
+      
+      <h3>2. The Return of Long-Form Video</h3>
+      <p>While short-form content like TikToks and Reels dominated previous years, we're seeing a shift back towards longer, more in-depth video content. Platforms are incentivizing longer watch times, allowing creators to explore topics with greater nuance.</p>
+      
+      <h3>3. Social Commerce 2.0</h3>
+      <p>Shopping directly through social apps has become seamless. In 2026, we expect to see even more integration between discovery and purchase, with augmented reality (AR) try-on features becoming standard.</p>
+      
+      <h3>4. Niche Communities Over Mass Appeal</h3>
+      <p>Broad reach is becoming less valuable than deep engagement. Brands are finding success by cultivating smaller, highly engaged communities on platforms like Discord and specialized subreddits.</p>
+      
+      <p>To stay ahead, focus on building genuine connections and providing value to your specific audience rather than chasing viral trends.</p>
+    `,
+    author: 'Sarah Jenkins',
+    date: 'February 10, 2026',
+    category: 'Strategy',
+    image: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?q=80&w=1000&auto=format&fit=crop',
+    readTime: '5 min read'
+  },
+  {
     id: 'content-calendar-guide',
     title: 'How to Build a Winning Content Calendar',
     excerpt: 'A step-by-step guide to organizing your social media strategy and ensuring consistent posting schedules.',
